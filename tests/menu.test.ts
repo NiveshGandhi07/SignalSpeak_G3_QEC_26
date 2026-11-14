@@ -1,13 +1,14 @@
 // Tests for the menu navigation state machine. Test framework: Vitest (MIT) https://vitest.dev
 // AI-assisted: written with help from Claude (Anthropic).
 import { describe, expect, it } from "vitest";
-import { BACK_ID, breadcrumb, currentMenu, initialNav, MENUS, selectItem, visibleItems } from "../src/ui/menu";
+import { BACK_ID, breadcrumb, buildMenus, currentMenu, initialNav, MENUS, selectItem, visibleItems } from "../src/ui/menu";
+import { parseEnabled, toggleMacro } from "../src/macros/catalog";
 
 const ids = (nav = initialNav()) => visibleItems(nav).map((i) => i.id);
 
 describe("menu", () => {
-  it("home shows the six top-level tiles and no Back", () => {
-    expect(ids()).toEqual(["care", "yes", "no", "emergency", "binds", "calibrate"]);
+  it("home shows the eight top-level tiles and no Back", () => {
+    expect(ids()).toEqual(["care", "yes", "no", "emergency", "about", "macros", "binds", "calibrate"]);
   });
 
   it("Yes / No speak without leaving home", () => {
@@ -63,5 +64,44 @@ describe("menu", () => {
   it("every submenu reference points at a real menu", () => {
     for (const m of Object.values(MENUS))
       for (const i of m.items) if (i.submenu) expect(MENUS[i.submenu]).toBeDefined();
+  });
+});
+
+describe("about me", () => {
+  it("opens a card screen with Back and Read aloud", () => {
+    const nav = selectItem(initialNav(), "about").nav;
+    expect(currentMenu(nav).view).toBe("about");
+    expect(ids(nav)).toEqual([BACK_ID, "about-read"]);
+    expect(selectItem(nav, "about-read").action?.kind).toBe("speak");
+  });
+});
+
+describe("macros", () => {
+  it("shows the enabled shortcuts plus Edit", () => {
+    const menus = buildMenus(["youtube", "calculator"]);
+    const nav = selectItem(initialNav(), "macros", menus).nav;
+    expect(visibleItems(nav, menus).map((i) => i.id)).toEqual([BACK_ID, "macro-youtube", "macro-calculator", "macro-edit"]);
+    expect(selectItem(nav, "macro-youtube", menus).action).toEqual({ kind: "openMacro", macroId: "youtube" });
+  });
+
+  it("edit screen marks enabled shortcuts and toggles them", () => {
+    const menus = buildMenus(["youtube"]);
+    let nav = selectItem(initialNav(), "macros", menus).nav;
+    nav = selectItem(nav, "macro-edit", menus).nav;
+    const items = visibleItems(nav, menus);
+    expect(items.find((i) => i.id === "toggle-youtube")?.checked).toBe(true);
+    expect(items.find((i) => i.id === "toggle-netflix")?.checked).toBe(false);
+    expect(selectItem(nav, "toggle-netflix", menus).action).toEqual({ kind: "toggleMacro", macroId: "netflix" });
+  });
+
+  it("toggleMacro adds/removes and keeps catalogue order", () => {
+    expect(toggleMacro(["calculator"], "youtube")).toEqual(["youtube", "calculator"]);
+    expect(toggleMacro(["youtube", "calculator"], "youtube")).toEqual(["calculator"]);
+    expect(toggleMacro(["youtube"], "not-a-macro")).toEqual(["youtube"]);
+  });
+
+  it("parseEnabled sanitises stored data", () => {
+    expect(parseEnabled(["netflix", "evil", 3])).toEqual(["netflix"]);
+    expect(parseEnabled("garbage")).toContain("youtube"); // falls back to defaults
   });
 });

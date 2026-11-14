@@ -1,8 +1,12 @@
 // Renders the current menu as big gaze-selectable tiles and runs the actions from menu.ts.
 // AI-assisted: written with help from Claude (Anthropic).
-import { breadcrumb, currentMenu, initialNav, selectItem, visibleItems, type Action, type NavState } from "./menu";
+import { breadcrumb, buildMenus, currentMenu, initialNav, selectItem, visibleItems, type Action, type Menu, type NavState } from "./menu";
 import { Alarm } from "./alarm";
+import { renderAboutCard } from "./aboutCard";
 import { speak } from "../tts/speak";
+import { parseEnabled, toggleMacro } from "../macros/catalog";
+import { openMacro } from "../macros/open";
+import { PROFILE } from "../profile/profile";
 
 export interface BoardCallbacks {
   onCalibrate: () => void;
@@ -10,6 +14,7 @@ export interface BoardCallbacks {
 }
 
 const ALARM_STOP_DWELL_MS = 3000; // deliberately longer than normal dwell
+const MACROS_KEY = "signalspeak.macros";
 
 export class Board {
   private nav: NavState = initialNav();
@@ -18,6 +23,8 @@ export class Board {
   private tiles: HTMLElement[] = [];
   private alarm: Alarm;
   private cb: BoardCallbacks;
+  private enabledMacros = loadMacros();
+  private menus: Record<string, Menu> = buildMenus(this.enabledMacros);
   /** bumped on every screen change so the dwell logic can restart cleanly */
   version = 0;
 
@@ -47,7 +54,7 @@ export class Board {
       return;
     }
     flash(el);
-    const { nav, action } = selectItem(this.nav, el.dataset.id!);
+    const { nav, action } = selectItem(this.nav, el.dataset.id!, this.menus);
     const changed = nav !== this.nav;
     this.nav = nav;
     if (action) this.run(action);
@@ -67,6 +74,15 @@ export class Board {
       case "calibrate":
         this.cb.onCalibrate();
         break;
+      case "openMacro":
+        openMacro(a.macroId).then(this.cb.onMessage);
+        break;
+      case "toggleMacro":
+        this.enabledMacros = toggleMacro(this.enabledMacros, a.macroId);
+        saveMacros(this.enabledMacros);
+        this.menus = buildMenus(this.enabledMacros);
+        this.render();
+        break;
       case "placeholder":
         this.cb.onMessage(a.text);
         break;
@@ -74,16 +90,19 @@ export class Board {
   }
 
   private render(): void {
-    const menu = currentMenu(this.nav);
-    this.header.textContent = breadcrumb(this.nav);
+    const menu = currentMenu(this.nav, this.menus);
+    this.header.textContent = breadcrumb(this.nav, this.menus);
     this.grid.style.gridTemplateColumns = `repeat(${menu.columns}, 1fr)`;
+    this.grid.className = `grid ${menu.view ?? ""}`;
     this.grid.innerHTML = "";
-    this.tiles = visibleItems(this.nav).map((item) => {
+    if (menu.view === "about") this.grid.appendChild(renderAboutCard(PROFILE));
+    this.tiles = visibleItems(this.nav, this.menus).map((item) => {
       const el = document.createElement("div");
-      el.className = `tile ${item.tone ?? ""}`;
+      el.className = `tile ${item.tone ?? ""} ${item.checked === false ? "off" : ""}`;
       el.dataset.id = item.id;
       if (item.tone === "pain") el.style.setProperty("--pain", item.label);
-      el.innerHTML = `${item.icon ? `<span class="icon">${item.icon}</span>` : ""}<span>${item.label}</span>`;
+      const check = item.checked === undefined ? "" : `<span class="check">${item.checked ? "✓" : ""}</span>`;
+      el.innerHTML = `${check}${item.icon ? `<span class="icon">${item.icon}</span>` : ""}<span>${item.label}</span>`;
       this.grid.appendChild(el);
       return el;
     });
@@ -97,6 +116,23 @@ export class Board {
   goHome(): void {
     this.nav = initialNav();
     this.render();
+  }
+}
+
+function loadMacros(): string[] {
+  try {
+    const raw = localStorage.getItem(MACROS_KEY);
+    return parseEnabled(raw ? JSON.parse(raw) : undefined);
+  } catch {
+    return parseEnabled(undefined);
+  }
+}
+
+function saveMacros(ids: string[]): void {
+  try {
+    localStorage.setItem(MACROS_KEY, JSON.stringify(ids));
+  } catch {
+    /* storage unavailable — choice lasts for this session only */
   }
 }
 

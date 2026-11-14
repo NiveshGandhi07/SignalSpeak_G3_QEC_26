@@ -1,5 +1,6 @@
 // Vite config (Vite, MIT — https://vite.dev).
-// Adds small server-side endpoints (dev + preview server) for emergency phone alerts via Twilio:
+// Adds POST /api/open (open a macro's website/app with the OS — see macroOpener below) and
+// small server-side endpoints (dev + preview server) for emergency phone alerts via Twilio:
 //   POST /api/sms        {body}    -> text the caregiver      (Messages API)
 //   POST /api/call       {script}  -> call the caregiver, read the script aloud (Calls API + TwiML <Say>)
 //   GET  /api/call?sid=  -> {status, answeredBy}               (poll whether the caregiver answered)
@@ -12,7 +13,9 @@
 // play a Twilio message first). The ntfy push notification works regardless.
 // AI-assisted: written with help from Claude (Anthropic).
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { spawn } from "node:child_process";
 import { defineConfig, loadEnv, type Plugin } from "vite";
+import { findMacro } from "./src/macros/catalog.ts";
 
 type Res = ServerResponse;
 
@@ -121,7 +124,63 @@ function twilioRelay(env: Record<string, string>): Plugin {
   };
 }
 
+/**
+ * POST /api/open {macroId} — opens a website / app from the macro catalogue with the operating system.
+ * Only catalogue entries can be opened (looked up server-side), and arguments are passed to spawn()
+ * as an array without a shell, so the browser can't inject commands.
+ */
+function macroOpener(): Plugin {
+  const APPS: Record<string, Record<string, [string, string[]]>> = {
+    win32: { calculator: ["calc.exe", []], notepad: ["notepad.exe", []] },
+    darwin: { calculator: ["open", ["-a", "Calculator"]], notepad: ["open", ["-a", "TextEdit"]] },
+    linux: { calculator: ["gnome-calculator", []], notepad: ["gedit", []] },
+  };
+  const urlOpener: Record<string, string> = { win32: "explorer.exe", darwin: "open", linux: "xdg-open" };
+
+  const middleware = (req: IncomingMessage, res: Res, next: () => void) => {
+    if (req.method !== "POST" || req.url !== "/api/open") return next();
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const send = (status: number, data: object) => {
+        res.statusCode = status;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify(data));
+      };
+      let macroId = "";
+      try {
+        macroId = String(JSON.parse(raw).macroId ?? "");
+      } catch {
+        /* handled below */
+      }
+      const macro = findMacro(macroId);
+      if (!macro) return send(404, { error: "unknown macro" });
+      const plat = process.platform;
+      let cmd: [string, string[]] | undefined;
+      if (macro.target.kind === "url") {
+        const u = new URL(macro.target.url);
+        if (u.protocol !== "https:") return send(400, { error: "only https links" });
+        cmd = urlOpener[plat] ? [urlOpener[plat], [u.href]] : undefined;
+      } else {
+        cmd = APPS[plat]?.[macro.target.app];
+      }
+      if (!cmd) return send(501, { error: `not supported on ${plat}` });
+      try {
+        spawn(cmd[0], cmd[1], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+        send(200, { ok: true });
+      } catch (e) {
+        send(500, { error: (e as Error).message });
+      }
+    });
+  };
+  return {
+    name: "macro-opener",
+    configureServer: (server) => void server.middlewares.use(middleware),
+    configurePreviewServer: (server) => void server.middlewares.use(middleware),
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), ""); // "" = also load non-VITE_ (server-only) vars
-  return { plugins: [twilioRelay(env)] };
+  return { plugins: [twilioRelay(env), macroOpener()] };
 });

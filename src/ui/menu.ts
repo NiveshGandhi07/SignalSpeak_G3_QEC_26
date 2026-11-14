@@ -1,10 +1,14 @@
 // Menu tree + navigation state machine (pure, no DOM — unit tested).
 // AI-assisted: written with help from Claude (Anthropic).
+import { CATALOG, DEFAULT_MACROS, findMacro } from "../macros/catalog";
+import { introText, PROFILE } from "../profile/profile";
 
 export type Action =
   | { kind: "speak"; text: string; goHome?: boolean }
   | { kind: "calibrate" }
   | { kind: "emergency" }
+  | { kind: "openMacro"; macroId: string }
+  | { kind: "toggleMacro"; macroId: string }
   | { kind: "placeholder"; text: string };
 
 export type Tone = "danger" | "yes" | "no" | "nav" | "pain";
@@ -14,6 +18,8 @@ export interface MenuItem {
   label: string;
   icon?: string;
   tone?: Tone;
+  /** shows a ✓ (e.g. macro is enabled) */
+  checked?: boolean;
   /** open this sub-menu */
   submenu?: string;
   /** or perform this action */
@@ -25,6 +31,8 @@ export interface Menu {
   title: string;
   columns: number;
   items: MenuItem[];
+  /** special screen layout; default is a plain tile grid */
+  view?: "about";
 }
 
 export const ROOT = "home";
@@ -37,16 +45,18 @@ const painItems: MenuItem[] = Array.from({ length: 10 }, (_, i) => ({
   action: { kind: "speak" as const, text: `My pain is ${i + 1} out of 10`, goHome: true },
 }));
 
-export const MENUS: Record<string, Menu> = {
+const STATIC_MENUS: Record<string, Menu> = {
   home: {
     id: "home",
     title: "Home",
-    columns: 3,
+    columns: 4,
     items: [
       { id: "care", label: "Caregiver / Assistance", icon: "🙋", submenu: "care" },
       { id: "yes", label: "Yes", icon: "👍", tone: "yes", action: { kind: "speak", text: "Yes" } },
       { id: "no", label: "No", icon: "👎", tone: "no", action: { kind: "speak", text: "No" } },
       { id: "emergency", label: "Emergency", icon: "🚨", tone: "danger", action: { kind: "emergency" } },
+      { id: "about", label: "About me", icon: "🪪", submenu: "about" },
+      { id: "macros", label: "Macros & Shortcuts", icon: "⚡", submenu: "macros" },
       { id: "binds", label: "Binds", icon: "⚙️", tone: "nav", submenu: "binds" },
       { id: "calibrate", label: "Calibrate", icon: "🎯", tone: "nav", action: { kind: "calibrate" } },
     ],
@@ -64,12 +74,7 @@ export const MENUS: Record<string, Menu> = {
       { id: "temp", label: "Too hot / cold", icon: "🌡️", submenu: "temp" },
     ],
   },
-  pain: {
-    id: "pain",
-    title: "Pain level",
-    columns: 4,
-    items: painItems,
-  },
+  pain: { id: "pain", title: "Pain level", columns: 4, items: painItems },
   temp: {
     id: "temp",
     title: "Temperature",
@@ -78,6 +83,13 @@ export const MENUS: Record<string, Menu> = {
       { id: "hot", label: "Too hot", icon: "🥵", action: { kind: "speak", text: "I am too hot", goHome: true } },
       { id: "cold", label: "Too cold", icon: "🥶", action: { kind: "speak", text: "I am too cold", goHome: true } },
     ],
+  },
+  about: {
+    id: "about",
+    title: "About me",
+    columns: 3,
+    view: "about",
+    items: [{ id: "about-read", label: "Read aloud", icon: "🔊", action: { kind: "speak", text: introText(PROFILE) } }],
   },
   binds: {
     id: "binds",
@@ -89,6 +101,38 @@ export const MENUS: Record<string, Menu> = {
     ],
   },
 };
+
+/** "Macros & Shortcuts": the user's chosen shortcuts + an Edit tile. */
+export function macrosMenu(enabled: string[]): Menu {
+  const items: MenuItem[] = enabled.flatMap((id) => {
+    const m = findMacro(id);
+    return m ? [{ id: `macro-${m.id}`, label: m.label, icon: m.icon, action: { kind: "openMacro" as const, macroId: m.id } }] : [];
+  });
+  items.push({ id: "macro-edit", label: "Edit macros", icon: "✏️", tone: "nav", submenu: "macroEdit" });
+  return { id: "macros", title: "Macros & Shortcuts", columns: items.length + 1 > 6 ? 4 : 3, items };
+}
+
+/** Pick which shortcuts appear — by gaze, no keyboard needed. */
+export function macroEditMenu(enabled: string[]): Menu {
+  return {
+    id: "macroEdit",
+    title: "Edit macros",
+    columns: 3,
+    items: CATALOG.map((m) => ({
+      id: `toggle-${m.id}`,
+      label: m.label,
+      icon: m.icon,
+      checked: enabled.includes(m.id),
+      action: { kind: "toggleMacro" as const, macroId: m.id },
+    })),
+  };
+}
+
+export function buildMenus(enabledMacros: string[]): Record<string, Menu> {
+  return { ...STATIC_MENUS, macros: macrosMenu(enabledMacros), macroEdit: macroEditMenu(enabledMacros) };
+}
+
+export const MENUS: Record<string, Menu> = buildMenus(DEFAULT_MACROS);
 
 const BACK: MenuItem = { id: BACK_ID, label: "Back", icon: "⬅️", tone: "nav" };
 
