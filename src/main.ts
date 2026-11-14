@@ -66,6 +66,7 @@ const board = new Board(document.querySelector<HTMLDivElement>("#board")!, {
   onMessage: (text) => (statusEl.textContent = text),
   speakDelayMs: (quick) => (quick ? fatigue.pacing().quickSpeakDelayMs : fatigue.pacing().speakDelayMs),
   onUndo: () => fatigue.recordUndo(performance.now()),
+  usesBrow: () => !!cal?.brow && !fatigue.pacing().preferDwell,
   onBindsChange: () => {
     rebuildEmergencyDetector();
     const b = EMERGENCY_BINDS.find((x) => x.id === emergency.bind)!;

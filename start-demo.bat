@@ -1,11 +1,15 @@
 @echo off
 rem SignalSpeak hands-free demo launcher (Windows).
-rem Starts the local server, then opens Chrome with flags that:
-rem   - pre-grant the camera (no "Allow camera?" prompt; the app never requests the microphone)
-rem   - allow speech/sound without a click (Chrome normally blocks audio until the page is clicked)
-rem   - use a private profile so the flags apply even if Chrome is already open, and so calibration persists
-rem Once the page is up, nothing needs to be clicked or typed. Exit Chrome with Alt+F4.
-rem Chrome flags reference: https://peter.sh/experiments/chromium-command-line-switches/
+rem Starts the local server, then opens Chrome (or Edge) with flags so that NOTHING has to be clicked,
+rem allowed or dismissed once the page is up:
+rem   --use-fake-ui-for-media-stream        camera permission is granted automatically (real camera; the app never asks for the mic)
+rem   --autoplay-policy=no-user-gesture-required   speech + alarm sounds play without a first click
+rem   --no-first-run --no-default-browser-check     no welcome / "make default" screens
+rem   --disable-session-crashed-bubble --hide-crash-restore-bubble   no "restore pages?" bar
+rem   --disable-notifications --disable-features=Translate,...        no notification / translate / sign-in prompts
+rem   --user-data-dir=<private profile>     flags apply even if Chrome is already open; calibration persists between runs
+rem   --app=<url> --start-fullscreen        no address bar or tabs; exit with Alt+F4
+rem Chrome flags reference: https://peter.sh/experiments/chromium-command-line-switches/ [17]
 rem AI-assisted: written with help from Claude (Anthropic).
 setlocal
 cd /d "%~dp0"
@@ -48,7 +52,10 @@ start "" %BROWSER% ^
   --user-data-dir="%PROFILE%" ^
   --use-fake-ui-for-media-stream ^
   --autoplay-policy=no-user-gesture-required ^
-  --no-first-run --no-default-browser-check --disable-session-crashed-bubble ^
+  --no-first-run --no-default-browser-check ^
+  --disable-session-crashed-bubble --hide-crash-restore-bubble ^
+  --disable-notifications --disable-infobars ^
+  --disable-features=Translate,TranslateUI,PasswordManagerOnboarding,PrivacySandboxSettings4,SigninInterceptBubble,msEdgeSignIn ^
   --start-fullscreen ^
   --app=%URL%
 endlocal

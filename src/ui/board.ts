@@ -13,6 +13,7 @@ import { fractionLeft, isDue, remainingMs, type PendingSpeech } from "./pendingS
 import { icon } from "./icons";
 import { parseBinds, type Binds } from "../events/emergencyGesture";
 import { attempt, listenForAck, sendPush } from "../emergency/notify";
+import { Help } from "./help";
 
 export interface BoardCallbacks {
   onCalibrate: () => void;
@@ -23,6 +24,8 @@ export interface BoardCallbacks {
   onUndo: () => void;
   /** the user changed a bind (e.g. emergency gesture) */
   onBindsChange: (binds: Binds) => void;
+  /** current select method, for the Help card */
+  usesBrow: () => boolean;
 }
 
 /** How a tile may be selected. dwellMs null = use the normal method (brow raise or normal dwell). */
@@ -44,6 +47,7 @@ export class Board {
   private grid: HTMLDivElement;
   private tiles: HTMLElement[] = [];
   private alarm: Alarm;
+  private help: Help;
   private cb: BoardCallbacks;
   private enabledMacros = loadMacros();
   private binds: Binds = loadBinds();
@@ -64,6 +68,7 @@ export class Board {
     this.header = root.querySelector(".crumb")!;
     this.grid = root.querySelector(".grid")!;
     this.alarm = new Alarm(document.body);
+    this.help = new Help(document.body, () => ({ usesBrow: this.cb.usesBrow(), emergency: this.binds.emergency }));
 
     this.pendingEl = document.createElement("div");
     this.pendingEl.id = "pending";
@@ -87,7 +92,8 @@ export class Board {
   targets(): HTMLElement[] {
     if (this.alarm.active) return [this.alarm.stopTile];
     if (this.pending) return [this.cancelTile];
-    return this.tiles;
+    if (this.help.open) return [this.help.closeTile];
+    return [...this.tiles, this.help.button];
   }
 
   selectRule(el: HTMLElement): SelectRule {
@@ -124,6 +130,12 @@ export class Board {
       this.cancelPending();
       return;
     }
+    if (el === this.help.button || el === this.help.closeTile) {
+      flash(el);
+      el === this.help.button ? this.help.show() : this.help.hide();
+      this.version++;
+      return;
+    }
     flash(el);
     const { nav, action } = selectItem(this.nav, el.dataset.id!, this.menus);
     const changed = nav !== this.nav;
@@ -136,6 +148,7 @@ export class Board {
   triggerEmergency(): void {
     if (this.alarm.active) return;
     this.clearPending();
+    this.help.hide();
     this.stopAssistAck(); // the alarm has its own "on my way" listener
     this.alarm.start();
     this.version++;
@@ -270,6 +283,8 @@ export class Board {
 
   setDimmed(dim: boolean): void {
     this.grid.parentElement!.classList.toggle("dim", dim);
+    this.help.setButtonVisible(!dim);
+    if (dim) this.help.hide();
   }
 
   goHome(): void {

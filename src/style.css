@@ -241,6 +241,55 @@ html, body {
 .section ul { margin: 2px 0 0; padding-left: 18px; }
 .medical { color: #8a1c1c; }
 
+/* ================= help ================= */
+#helpBtn {
+  position: fixed;
+  right: 32px;
+  bottom: 32px;
+  width: 150px;
+  height: 64px;
+  flex-direction: row;
+  gap: 10px;
+  padding: 0 18px;
+  font-size: 1.05rem;
+  border-radius: 32px;
+  background: var(--surface);
+  z-index: 6;
+}
+#helpBtn .ico { width: 34px; height: 34px; padding: 6px; border-radius: 10px; }
+#helpBtn[hidden] { display: none; }
+#board { padding-bottom: 72px; } /* keep the bottom row of tiles clear of the Help button */
+
+#help {
+  position: fixed;
+  inset: 0;
+  z-index: 12;
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: 24px;
+  padding: 96px 32px 32px;
+  background: rgba(18, 21, 28, 0.94);
+}
+#help[hidden] { display: none; }
+.helpCard {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 28px 32px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.helpTitle { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.01em; }
+.helpList { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 28px; align-content: start; }
+.helpItem { display: flex; gap: 14px; align-items: flex-start; }
+.helpItem .ico { width: 44px; height: 44px; padding: 10px; border-radius: 12px; color: var(--accent); background: var(--accent-soft); flex: 0 0 auto; }
+.helpItem div { display: flex; flex-direction: column; gap: 3px; }
+.helpItem b { font-size: 1.05rem; }
+.helpItem span { font-size: 0.95rem; color: var(--muted); line-height: 1.35; }
+.helpClose { align-self: start; height: 160px; }
+
 /* ================= undo-before-speaking sheet ================= */
 #pending {
   position: fixed;
