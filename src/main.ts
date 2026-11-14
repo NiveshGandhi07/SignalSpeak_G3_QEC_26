@@ -11,6 +11,7 @@ import { FaceOverlay } from "./vision/overlay";
 import { blinkScore, headPose, rawGaze } from "./gaze/features";
 import { fitCalibration, predictScreen, type CalSample, type Calibration } from "./gaze/calibration";
 import { Stabilizer } from "./gaze/stabilizer";
+import { Board } from "./ui/board";
 
 // ---------- tunables ----------
 const FACE_HOLD_MS = 1500; // face must be visible this long before calibration auto-starts
@@ -19,7 +20,8 @@ const CAL_SETTLE_MS = 700; // ignore samples while the eyes travel to the dot
 const HEAD_PHASE_MS = 5000; // "keep looking at the dot, move your head gently"
 const BLINK_REJECT = 0.45; // drop frames where eyes are mostly closed
 const DWELL_MS = 1500; // dwell time to select a tile
-const TILE_STICKY_PX = 60; // once on a tile, stay on it until the cursor is this far outside it
+const TILE_STICKY_PX = 60;
+const REARM_MS = 800; // pause after a selection / screen change before dwell starts counting // once on a tile, stay on it until the cursor is this far outside it
 const STORAGE_KEY = "signalspeak.gazeCalibration.v2";
 
 // ---------- DOM ----------
@@ -27,14 +29,13 @@ const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
   <div id="camWrap"><video id="cam" playsinline muted></video><canvas id="mesh"></canvas></div>
   <div id="status">Loading face model…</div>
-  <div id="tiles"></div>
+  <div id="board"></div>
   <div id="calDot" hidden></div>
   <div id="cursor" hidden><svg viewBox="0 0 40 40"><circle class="ring" cx="20" cy="20" r="17"/></svg></div>
   <pre id="debug"></pre>
 `;
 const video = document.querySelector<HTMLVideoElement>("#cam")!;
 const statusEl = document.querySelector<HTMLDivElement>("#status")!;
-const tilesEl = document.querySelector<HTMLDivElement>("#tiles")!;
 const calDot = document.querySelector<HTMLDivElement>("#calDot")!;
 const cursor = document.querySelector<HTMLDivElement>("#cursor")!;
 const ring = cursor.querySelector<SVGCircleElement>(".ring")!;
@@ -42,13 +43,9 @@ const debugEl = document.querySelector<HTMLPreElement>("#debug")!;
 const overlay = new FaceOverlay(document.querySelector<HTMLCanvasElement>("#mesh")!, video);
 const RING_LEN = 2 * Math.PI * 17;
 
-const TILE_LABELS = ["Call caregiver", "Yes", "No", "Water", "Pain", "Recalibrate"];
-const tiles = TILE_LABELS.map((label) => {
-  const el = document.createElement("div");
-  el.className = "tile";
-  el.textContent = label;
-  tilesEl.appendChild(el);
-  return el;
+const board = new Board(document.querySelector<HTMLDivElement>("#board")!, {
+  onCalibrate: () => startCalibration(performance.now()),
+  onMessage: (text) => (statusEl.textContent = text),
 });
 
 // ---------- state ----------
@@ -64,6 +61,7 @@ if (cal) mode = { kind: "track" };
 const stab = new Stabilizer();
 let dwellTile: HTMLElement | null = null;
 let dwellStart = 0;
+let boardVersion = -1;
 let lastVideoTime = -1;
 let frames = 0, fps = 0, fpsT = performance.now();
 
@@ -94,7 +92,7 @@ function saveCalibration(c: Calibration): void {
 function startCalibration(now: number): void {
   mode = { kind: "calibrate", idx: 0, start: now, samples: [] };
   cursor.hidden = true;
-  tilesEl.classList.add("dim");
+  board.setDimmed(true);
 }
 
 // ---------- per-frame ----------
@@ -178,7 +176,8 @@ function stepCalibration(
 
 function finishCalibration(samples: CalSample[]): void {
   calDot.hidden = true;
-  tilesEl.classList.remove("dim");
+  board.setDimmed(false);
+  board.goHome();
   try {
     cal = fitCalibration(samples);
     saveCalibration(cal);
@@ -209,31 +208,34 @@ function inRect(el: HTMLElement, x: number, y: number, margin: number): boolean 
 }
 
 function updateDwell(x: number, y: number, now: number): void {
+  // Screen changed (new menu / alarm): forget the old tile and pause briefly, so the tile that
+  // appears under the user's gaze isn't selected immediately ("rearm" delay).
+  if (board.version !== boardVersion) {
+    boardVersion = board.version;
+    dwellTile?.classList.remove("hover");
+    dwellTile = null;
+    dwellStart = now + REARM_MS;
+  }
+  const targets = board.targets();
   // Sticky: keep the current tile while the cursor is near it, so jitter at edges doesn't reset dwell.
   const hit =
-    dwellTile && inRect(dwellTile, x, y, TILE_STICKY_PX) ? dwellTile : (tiles.find((el) => inRect(el, x, y, 0)) ?? null);
+    dwellTile && inRect(dwellTile, x, y, TILE_STICKY_PX)
+      ? dwellTile
+      : (targets.find((el) => inRect(el, x, y, 0)) ?? null);
   if (hit !== dwellTile) {
     dwellTile?.classList.remove("hover");
     hit?.classList.add("hover");
     dwellTile = hit;
-    dwellStart = now;
+    dwellStart = Math.max(now, dwellStart);
   }
-  const p = dwellTile ? clamp((now - dwellStart) / DWELL_MS, 0, 1) : 0;
+  const need = dwellTile ? board.dwellMsFor(dwellTile, DWELL_MS) : DWELL_MS;
+  const p = dwellTile ? clamp((now - dwellStart) / need, 0, 1) : 0;
   ring.style.strokeDashoffset = String(RING_LEN * (1 - p));
   if (dwellTile && p >= 1) {
-    select(dwellTile, now);
-    dwellStart = now + 1000; // brief refractory period before the same tile can fire again
+    const el = dwellTile;
+    dwellStart = now + REARM_MS; // refractory period before the same tile can fire again
+    board.activate(el);
   }
-}
-
-function select(el: HTMLElement, now: number): void {
-  el.classList.add("selected");
-  setTimeout(() => el.classList.remove("selected"), 600);
-  if (el.textContent === "Recalibrate") {
-    startCalibration(now);
-    return;
-  }
-  statusEl.textContent = `Selected: ${el.textContent}`;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));

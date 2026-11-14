@@ -11,7 +11,7 @@ export interface StabilizerOptions {
   deadZone: number; // px; small movements inside this radius are ignored
 }
 
-export const DEFAULT_STABILIZER: StabilizerOptions = { window: 5, minCutoff: 0.4, beta: 0.004, deadZone: 40 };
+export const DEFAULT_STABILIZER: StabilizerOptions = { window: 5, minCutoff: 0.4, beta: 0.002, deadZone: 40 };
 
 export class Stabilizer {
   private hx: number[] = [];
