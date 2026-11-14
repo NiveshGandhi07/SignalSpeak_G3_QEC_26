@@ -13,7 +13,7 @@ describe("menu", () => {
 
   it("Yes / No speak without leaving home", () => {
     const r = selectItem(initialNav(), "yes");
-    expect(r.action).toEqual({ kind: "speak", text: "Yes" });
+    expect(r.action).toEqual({ kind: "speak", text: "Yes", quick: true });
     expect(currentMenu(r.nav).id).toBe("home");
   });
 

@@ -6,6 +6,8 @@
 // -> head-pose-compensated gaze model -> stabilised on-screen cursor.
 // Select: look at a tile, then raise the eyebrows. If the brow raise is too weak to detect reliably,
 // the app falls back to dwell (look at a tile and hold) — the interface adapts to the user.
+// Emergency from any screen: two long blinks (1–3 s each) within 5 s.
+// Fatigue-aware pacing: timings, brow sensitivity and selection method adapt as the user tires.
 // AI-assisted: written with help from Claude (Anthropic).
 import "./style.css";
 import type { FaceLandmarker } from "@mediapipe/tasks-vision";
@@ -15,7 +17,11 @@ import { blinkScore, headPose, rawGaze } from "./gaze/features";
 import { fitCalibration, predictScreen, type CalSample, type Calibration } from "./gaze/calibration";
 import { Stabilizer } from "./gaze/stabilizer";
 import { Board } from "./ui/board";
-import { browScore, calibrateBrow, initialBrow, stepBrow, type BrowParams } from "./events/brow";
+import { browScore, calibrateBrow, initialBrow, scaleBrow, stepBrow, type BrowParams } from "./events/brow";
+import { initialLongBlink, stepLongBlink } from "./events/longBlink";
+import { FatigueTracker, type Pacing } from "./adapt/fatigue";
+import { chirp } from "./ui/sound";
+import { isLookingAway } from "./ui/pendingSpeech";
 
 // ---------- tunables ----------
 const FACE_HOLD_MS = 1500; // face must be visible this long before calibration auto-starts
@@ -26,9 +32,9 @@ const BROW_PHASE_MS = 3500; // "raise your eyebrows and hold"
 const BROW_SETTLE_MS = 600; // reaction time before recording the raise
 const HOVER_SETTLE_MS = 250; // cursor must rest on a tile this long before a brow raise selects it
 const BLINK_REJECT = 0.45; // drop frames where eyes are mostly closed
-const DWELL_MS = 1500; // dwell time to select a tile (fallback when brow raise isn't usable)
+// Dwell time, re-arm pause and undo window come from the fatigue tracker (adapt/fatigue.ts).
 const TILE_STICKY_PX = 60; // once on a tile, stay on it until the cursor is this far outside it
-const REARM_MS = 800; // pause after a selection / screen change before the next selection can start
+const LOOK_AWAY_MS = 400; // looking off-screen this long cancels a pending phrase
 const STORAGE_KEY = "signalspeak.gazeCalibration.v3";
 
 // ---------- DOM ----------
@@ -36,6 +42,7 @@ const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
   <div id="camWrap"><video id="cam" playsinline muted></video><canvas id="mesh"></canvas></div>
   <div id="status">Loading face model…</div>
+  <div id="fatigue" title="Energy"><span class="fLabel">Energy</span><div class="fTrack"><div class="fBar"></div></div><span class="fText"></span></div>
   <div id="board"></div>
   <div id="calDot" hidden></div>
   <div id="cursor" hidden><svg viewBox="0 0 40 40"><circle class="ring" cx="20" cy="20" r="17"/></svg></div>
@@ -50,9 +57,15 @@ const debugEl = document.querySelector<HTMLPreElement>("#debug")!;
 const overlay = new FaceOverlay(document.querySelector<HTMLCanvasElement>("#mesh")!, video);
 const RING_LEN = 2 * Math.PI * 17;
 
+const fatigueBar = document.querySelector<HTMLDivElement>("#fatigue .fBar")!;
+const fatigueText = document.querySelector<HTMLSpanElement>("#fatigue .fText")!;
+
+const fatigue = new FatigueTracker();
 const board = new Board(document.querySelector<HTMLDivElement>("#board")!, {
   onCalibrate: () => startCalibration(performance.now()),
   onMessage: (text) => (statusEl.textContent = text),
+  speakDelayMs: (quick) => (quick ? fatigue.pacing().quickSpeakDelayMs : fatigue.pacing().speakDelayMs),
+  onUndo: () => fatigue.recordUndo(performance.now()),
 });
 
 // ---------- state ----------
@@ -74,6 +87,10 @@ let hoverSince = 0;
 let rearmUntil = 0;
 let boardVersion = -1;
 let brow = initialBrow();
+let longBlink = initialLongBlink();
+// current eyebrow raise, for measuring how high raises go (fatigue)
+let raisePeak = 0, raising = false, raiseClicked = false;
+let awaySince: number | null = null;
 let lastVideoTime = -1;
 let frames = 0, fps = 0, fpsT = performance.now();
 
@@ -128,6 +145,7 @@ function onFrame(lm: FaceLandmarker, now: number): void {
 
   if (!face) {
     cursor.hidden = true;
+    if (mode.kind === "track") updateLookAway(true, now); // turned away from the screen
     if (mode.kind === "waitFace") mode.since = null;
     statusEl.textContent = "No face detected — move into view";
     return;
@@ -139,7 +157,8 @@ function onFrame(lm: FaceLandmarker, now: number): void {
   const deg = (r: number) => ((r * 180) / Math.PI).toFixed(1);
   debugEl.textContent =
     `fps ${fps}  blink ${blink.toFixed(2)}  brow ${browVal.toFixed(2)}` +
-    (cal?.brow ? ` (click > ${cal.brow.high.toFixed(2)})` : " (dwell mode)") + "\n" +
+    (cal?.brow ? ` (click > ${cal.brow.high.toFixed(2)})` : " (dwell mode)") +
+    `  fatigue ${fatigue.score().toFixed(2)} ${JSON.stringify(fatigue.components(), (_k, v) => (typeof v === "number" ? +v.toFixed(2) : v))}\n` +
     `gx ${g.gx.toFixed(3)} gy ${g.gy.toFixed(3)} lookV ${g.lookV.toFixed(2)}\n` +
     `head yaw ${deg(pose.yaw)}° pitch ${deg(pose.pitch)}°  pos ${g.t.map((v) => v.toFixed(0)).join(",")} cm\n` +
     (cal ? `cal error ${cal.errorPx.toFixed(0)} px  k=(${cal.eye.kx}, ${cal.eye.ky})` : "");
@@ -227,26 +246,81 @@ let cursorX = 0, cursorY = 0;
 
 function stepTracking(g: ReturnType<typeof rawGaze>, blink: number, browVal: number, now: number): void {
   if (!cal) return;
-  // Brow-raise click detection
+  const pace = fatigue.pacing();
+
+  // Emergency from any screen: two long blinks. A chirp confirms the first one (the user's eyes are closed).
+  const lb = stepLongBlink(longBlink, blink, now);
+  longBlink = lb.state;
+  if (!board.alarmActive && lb.event === "long") {
+    chirp([660, 880]);
+    statusEl.textContent = "One more long blink for EMERGENCY";
+  } else if (!board.alarmActive && lb.event === "trigger") {
+    chirp([880, 880, 880]);
+    board.triggerEmergency();
+  }
+
+  // Eyebrow-raise click. Thresholds relax as the user tires (smaller raise needed).
+  const useBrow = !!cal.brow && !pace.preferDwell;
   let click = false, browLevel = 0, browsUp = false;
   if (cal.brow) {
-    const r = stepBrow(brow, browVal, now, cal.brow);
+    const p = scaleBrow(cal.brow, pace.browThresholdScale);
+    const r = stepBrow(brow, browVal, now, p);
     brow = r.state;
-    click = r.click;
+    click = r.click && useBrow;
     browLevel = r.level;
-    browsUp = browVal > cal.brow.low;
+    browsUp = browVal > p.low;
+    trackRaise(cal.brow, browVal, browsUp, r.click, now);
   }
+
   // Freeze the cursor during blinks and brow raises: both move the eyelids and would make it jump
   // off the tile the user is trying to select.
-  if (blink <= BLINK_REJECT && !browsUp) {
+  if (blink <= BLINK_REJECT && !(useBrow && browsUp)) {
     const [rx, ry] = predictScreen(cal, g);
     const [sx, sy] = stab.push(rx, ry, now);
     cursorX = clamp(sx, 0, window.innerWidth);
     cursorY = clamp(sy, 0, window.innerHeight);
+    updateLookAway(isLookingAway(rx, ry, window.innerWidth, window.innerHeight), now);
   }
   cursor.hidden = false;
   cursor.style.transform = `translate(${cursorX}px, ${cursorY}px)`;
-  updateSelection(cursorX, cursorY, now, click, browLevel);
+  updateSelection(cursorX, cursorY, now, click, browLevel, useBrow, pace);
+  renderFatigue(pace);
+}
+
+/** "Look away to cancel": gaze clearly off-screen (or face lost) for LOOK_AWAY_MS cancels a pending phrase. */
+function updateLookAway(away: boolean, now: number): void {
+  if (!away || !board.hasPending) {
+    awaySince = null;
+    return;
+  }
+  awaySince ??= now;
+  if (now - awaySince >= LOOK_AWAY_MS) {
+    awaySince = null;
+    board.lookAway();
+  }
+}
+
+/** Measure each deliberate eyebrow raise's peak relative to the calibrated raise (fatigue signal). */
+function trackRaise(p: BrowParams, value: number, up: boolean, clicked: boolean, now: number): void {
+  if (up) {
+    raisePeak = raising ? Math.max(raisePeak, value) : value;
+    raising = true;
+    raiseClicked ||= clicked;
+    return;
+  }
+  if (raising && raiseClicked) {
+    const calibratedRange = (p.high - p.baseline) / 0.5; // high was set at 50% of the calibrated raise
+    fatigue.recordBrowAmplitude((raisePeak - p.baseline) / calibratedRange, now);
+  }
+  raising = raiseClicked = false;
+}
+
+function renderFatigue(pace: Pacing): void {
+  const energy = 1 - pace.score;
+  fatigueBar.style.transform = `scaleX(${Math.max(0.04, energy)})`;
+  fatigueBar.style.background = pace.level === "fresh" ? "#3fb950" : pace.level === "tired" ? "#e3b341" : "#f85149";
+  fatigueText.textContent =
+    pace.level === "fresh" ? "Good" : pace.preferDwell ? "Resting brows — look & hold" : pace.level === "tired" ? "Tired — slower pace" : "Very tired — slow pace";
 }
 
 function inRect(el: HTMLElement, x: number, y: number, margin: number): boolean {
@@ -258,17 +332,18 @@ function inRect(el: HTMLElement, x: number, y: number, margin: number): boolean 
  * Decide what's selected. Two modes:
  *  - brow mode (default when calibration found a usable brow raise): look at a tile, raise brows.
  *    The ring shows how far the brows are raised.
- *  - dwell mode (fallback): look at a tile and hold; the ring fills over DWELL_MS.
- * The emergency "I'm OK" tile always needs a long dwell so the alarm can't be cancelled by accident.
+ *  - dwell mode (fallback, or when fatigue shows brow raises failing): look at a tile and hold.
+ * Some tiles have their own rule (board.selectRule): the alarm's "I'm OK" needs a long dwell so it
+ * can't be cancelled by accident; "Cancel" accepts a quick look so mistakes are easy to undo.
  */
-function updateSelection(x: number, y: number, now: number, click: boolean, browLevel: number): void {
-  // Screen changed (new menu / alarm): forget the old tile and pause briefly, so the tile that
-  // appears under the user's gaze isn't selected immediately ("rearm" delay).
+function updateSelection(x: number, y: number, now: number, click: boolean, browLevel: number, useBrow: boolean, pace: Pacing): void {
+  // Screen changed (new menu / alarm / cancel bar): forget the old tile and pause briefly, so the tile
+  // that appears under the user's gaze isn't selected immediately ("rearm" delay).
   if (board.version !== boardVersion) {
     boardVersion = board.version;
     hoverTile?.classList.remove("hover");
     hoverTile = null;
-    rearmUntil = now + REARM_MS;
+    rearmUntil = now + pace.rearmMs;
   }
   // Sticky: keep the current tile while the cursor is near it, so jitter at edges doesn't reset it.
   const hit =
@@ -281,26 +356,29 @@ function updateSelection(x: number, y: number, now: number, click: boolean, brow
     hoverTile = hit;
     hoverSince = now;
   }
-  const armed = now >= rearmUntil;
   const tile = hoverTile;
-  const dwellMs = tile ? board.dwellMsFor(tile, DWELL_MS) : DWELL_MS;
-  const useDwell = !cal?.brow || dwellMs !== DWELL_MS; // fallback mode, or the alarm's long-dwell tile
+  const rule = tile ? board.selectRule(tile) : { dwellMs: null, browAllowed: true };
+  const browOk = useBrow && rule.browAllowed;
+  const dwellMs = rule.dwellMs ?? (useBrow ? null : pace.dwellMs);
+  const startedAt = Math.max(hoverSince, rearmUntil); // when the user could start selecting this tile
 
   let progress = 0;
   let fire = false;
-  if (tile && armed) {
-    if (useDwell) {
-      progress = clamp((now - Math.max(hoverSince, rearmUntil)) / dwellMs, 0, 1);
+  if (tile && now >= rearmUntil) {
+    if (dwellMs !== null) {
+      progress = clamp((now - startedAt) / dwellMs, 0, 1);
       fire = progress >= 1;
-    } else {
-      progress = browLevel;
-      fire = click && now - hoverSince >= HOVER_SETTLE_MS;
+    }
+    if (browOk) {
+      progress = Math.max(progress, browLevel);
+      fire ||= click && now - hoverSince >= HOVER_SETTLE_MS;
     }
   }
-  cursor.classList.toggle("browMode", !useDwell);
+  cursor.classList.toggle("browMode", browOk && rule.dwellMs === null);
   ring.style.strokeDashoffset = String(RING_LEN * (1 - progress));
   if (tile && fire) {
-    rearmUntil = now + REARM_MS; // refractory period before the next selection
+    if (rule.dwellMs === null) fatigue.recordSelection(now - startedAt, now); // normal tiles only
+    rearmUntil = now + pace.rearmMs; // refractory period before the next selection
     hoverSince = now;
     board.activate(tile);
   }

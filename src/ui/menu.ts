@@ -4,7 +4,7 @@ import { CATALOG, DEFAULT_MACROS, findMacro } from "../macros/catalog";
 import { introText, PROFILE } from "../profile/profile";
 
 export type Action =
-  | { kind: "speak"; text: string; goHome?: boolean }
+  | { kind: "speak"; text: string; goHome?: boolean; quick?: boolean }
   | { kind: "calibrate" }
   | { kind: "emergency" }
   | { kind: "openMacro"; macroId: string }
@@ -52,8 +52,9 @@ const STATIC_MENUS: Record<string, Menu> = {
     columns: 4,
     items: [
       { id: "care", label: "Caregiver / Assistance", icon: "🙋", submenu: "care" },
-      { id: "yes", label: "Yes", icon: "👍", tone: "yes", action: { kind: "speak", text: "Yes" } },
-      { id: "no", label: "No", icon: "👎", tone: "no", action: { kind: "speak", text: "No" } },
+      // quick: short undo window — yes/no are the most frequent answers and need to feel instant
+      { id: "yes", label: "Yes", icon: "👍", tone: "yes", action: { kind: "speak", text: "Yes", quick: true } },
+      { id: "no", label: "No", icon: "👎", tone: "no", action: { kind: "speak", text: "No", quick: true } },
       { id: "emergency", label: "Emergency", icon: "🚨", tone: "danger", action: { kind: "emergency" } },
       { id: "about", label: "About me", icon: "🪪", submenu: "about" },
       { id: "macros", label: "Macros & Shortcuts", icon: "⚡", submenu: "macros" },

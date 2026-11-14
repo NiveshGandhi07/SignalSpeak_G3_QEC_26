@@ -51,6 +51,11 @@ export function calibrateBrow(rest: number[], raised: number[]): BrowParams | nu
   return { baseline, high: baseline + 0.5 * range, low: baseline + 0.25 * range };
 }
 
+/** Scale thresholds toward the baseline (k < 1 = a smaller raise is enough; used when the user tires). */
+export function scaleBrow(p: BrowParams, k: number): BrowParams {
+  return { baseline: p.baseline, high: p.baseline + (p.high - p.baseline) * k, low: p.baseline + (p.low - p.baseline) * k };
+}
+
 export interface BrowState {
   up: boolean;
   aboveSince: number | null;
