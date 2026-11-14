@@ -8,6 +8,7 @@
 import { speak, stopSpeaking } from "../tts/speak";
 import { classifyCall, idle, secondsLeft, step, type Effect, type EscEvent, type EscState } from "../emergency/escalation";
 import { attempt, callStatus, endCall, listenForAck, placeCall, sendPush, sendText } from "../emergency/notify";
+import { icon } from "./icons";
 
 const CALL_SCRIPT =
   "This is an emergency alert from Signal Speak. Your patient needs help right now. " +
@@ -38,20 +39,20 @@ export class Alarm {
     this.overlay.id = "alarm";
     this.overlay.hidden = true;
     this.overlay.innerHTML = `
-      <div class="alarmText">🚨 EMERGENCY — HELP NEEDED 🚨</div>
+      <div class="alarmText">${icon("alert")}<span>Emergency — help needed</span></div>
       <div class="alarmStatus"></div>
       <div class="alarmChannels"></div>
       <div class="call911" hidden>
-        <div class="call911Title">📞 Calling 911…</div>
+        <div class="call911Title">${icon("phone")}<span>Calling 911…</span></div>
         <div>The caregiver did not respond.</div>
-        <div class="sim">SIMULATION — no real call is placed</div>
+        <div class="sim">Simulation — no real call is placed</div>
       </div>`;
     this.statusEl = this.overlay.querySelector(".alarmStatus")!;
     this.channelsEl = this.overlay.querySelector(".alarmChannels")!;
     this.call911El = this.overlay.querySelector(".call911")!;
     this.stopTile = document.createElement("div");
     this.stopTile.className = "tile alarmStop";
-    this.stopTile.innerHTML = `<span class="icon">✋</span><span>I'm OK — stop alarm</span>`;
+    this.stopTile.innerHTML = `${icon("hand")}<span>I'm OK — stop alarm</span><small>look here for 3 seconds</small>`;
     this.overlay.appendChild(this.stopTile);
     parent.appendChild(this.overlay);
   }
@@ -101,7 +102,7 @@ export class Alarm {
       case "notifyPush":
         this.track("push", attempt(() =>
           sendPush({
-            title: "🚨 EMERGENCY",
+            title: "EMERGENCY",
             message: `Patient needs help NOW (${time}). Tap "I'm on my way" or 911 will be called.`,
             urgent: true,
             askAck: true,
@@ -112,8 +113,8 @@ export class Alarm {
         this.startCall();
         break;
       case "sendText":
-        this.track("text", attempt(() => sendText(`🚨 EMERGENCY (${time}): patient needs help and you did not respond. 911 is being called.`)));
-        void attempt(() => sendPush({ title: "🚑 911 CALLED (simulated)", message: `No caregiver response — escalated at ${time}.`, urgent: true }));
+        this.track("text", attempt(() => sendText(`EMERGENCY (${time}): patient needs help and you did not respond. 911 is being called.`)));
+        void attempt(() => sendPush({ title: "911 called (simulated)", message: `No caregiver response — escalated at ${time}.`, urgent: true }));
         break;
       case "call911":
         this.stopPolling();
@@ -126,7 +127,7 @@ export class Alarm {
         this.callSid = null;
         break;
       case "notifyCancelled":
-        void attempt(() => sendPush({ title: "✅ Alarm cancelled", message: `Patient indicated they are OK (${time}).` }));
+        void attempt(() => sendPush({ title: "Alarm cancelled", message: `Patient indicated they are OK (${time}).` }));
         break;
     }
   }
@@ -134,19 +135,19 @@ export class Alarm {
   /** Place the call, then poll Twilio until we know whether a human answered. */
   private startCall(): void {
     const session = this.session;
-    this.channels.set("call", "📞 calling caregiver…");
+    this.channels.set("call", "Calling caregiver…");
     this.renderChannels();
     placeCall(CALL_SCRIPT)
       .then(({ sid, detection, trial }) => {
         if (session !== this.session) return void endCall(sid); // alarm already stopped
         this.callSid = sid;
-        if (trial) this.channels.set("call", "📞 calling caregiver (Twilio trial message)…");
+        if (trial) this.channels.set("call", "Calling caregiver (Twilio trial message)…");
         this.renderChannels();
         this.pollTimer = window.setInterval(() => this.pollCall(sid, detection, session), CALL_POLL_MS);
       })
       .catch((e: Error) => {
         if (session !== this.session) return;
-        this.channels.set("call", `⚠️ ${e.message}`);
+        this.channels.set("call", `Call failed: ${e.message}`);
         this.renderChannels();
         this.dispatch({ type: "callUnanswered" }); // no call possible -> escalate after the minimum wait
       });
@@ -158,13 +159,13 @@ export class Alarm {
       if (session !== this.session || this.esc.phase !== "waiting") return;
       const outcome = classifyCall(status, answeredBy, detection);
       if (outcome === "pending") {
-        this.channels.set("call", `📞 call ${status}…`);
+        this.channels.set("call", `Call ${status}…`);
       } else if (outcome === "answered") {
-        this.channels.set("call", "📞 caregiver answered");
+        this.channels.set("call", "Caregiver answered");
         this.stopPolling();
         this.dispatch({ type: "callAnswered" });
       } else {
-        this.channels.set("call", `📞 not answered (${answeredBy?.startsWith("machine") ? "voicemail" : status})`);
+        this.channels.set("call", `Not answered (${answeredBy?.startsWith("machine") ? "voicemail" : status})`);
         this.stopPolling();
         this.dispatch({ type: "callUnanswered" });
       }
@@ -200,10 +201,10 @@ export class Alarm {
         this.statusEl.textContent = `Contacting caregiver — calling 911 in ${secondsLeft(this.esc, now)} s if no response`;
         break;
       case "acknowledged":
-        this.statusEl.textContent = "✅ Caregiver is on the way";
+        this.statusEl.textContent = "Caregiver is on the way";
         break;
       case "escalated":
-        this.statusEl.textContent = "🚑 Emergency services contacted (simulated)";
+        this.statusEl.textContent = "Emergency services contacted (simulated)";
         break;
       default:
         this.statusEl.textContent = "";

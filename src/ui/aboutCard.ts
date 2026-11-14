@@ -17,7 +17,7 @@ export function renderAboutCard(p: Profile): HTMLElement {
     <div class="cardInner">
       <div class="cardHead">
         <span class="cardName">${esc(p.name)}</span>
-        <span class="cardEnergy">⚡ ${esc(p.energy)}</span>
+        <span class="cardEnergy">${esc(p.energy)}</span>
       </div>
       <div class="cardArt">${avatar}</div>
       <div class="cardType">${esc(p.type)} — ${esc(p.tagline)}</div>

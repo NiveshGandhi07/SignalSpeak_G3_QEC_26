@@ -38,8 +38,17 @@ describe("menu", () => {
     nav = selectItem(nav, "pain").nav;
     expect(ids(nav)).toHaveLength(11); // Back + 1..10
     const r = selectItem(nav, "pain-7");
-    expect(r.action).toEqual({ kind: "speak", text: "My pain is 7 out of 10", goHome: true });
+    expect(r.action).toEqual({ kind: "speak", text: "My pain is 7 out of 10", goHome: true, notify: "plain" });
     expect(r.nav.stack).toEqual(["home"]);
+  });
+
+  it("assistance requests notify the caregiver; Yes/No and About me do not", () => {
+    const care = selectItem(initialNav(), "care").nav;
+    expect(selectItem(care, "call").action).toMatchObject({ kind: "speak", notify: "ack" });
+    expect(selectItem(care, "water").action).toMatchObject({ kind: "speak", notify: "plain" });
+    expect(selectItem(initialNav(), "yes").action).not.toHaveProperty("notify");
+    const about = selectItem(initialNav(), "about").nav;
+    expect(selectItem(about, "about-read").action).not.toHaveProperty("notify");
   });
 
   it("every caregiver need is reachable", () => {
@@ -50,10 +59,15 @@ describe("menu", () => {
     expect(selectItem(temp, "cold").action).toMatchObject({ kind: "speak", text: "I am too cold" });
   });
 
-  it("binds has scroll + click placeholders", () => {
-    const binds = selectItem(initialNav(), "binds").nav;
-    expect(ids(binds)).toEqual([BACK_ID, "bind-scroll", "bind-click"]);
-    expect(selectItem(binds, "bind-click").action?.kind).toBe("placeholder");
+  it("binds lists the emergency gestures with the current one checked", () => {
+    const nav = selectItem(initialNav(), "binds").nav;
+    expect(ids(nav)).toEqual([BACK_ID, "bind-twoLongBlinks", "bind-closedBrowRaises", "bind-twoLongCloses"]);
+    const items = visibleItems(nav);
+    expect(items.find((i) => i.id === "bind-twoLongBlinks")?.checked).toBe(true);
+    expect(items.find((i) => i.id === "bind-closedBrowRaises")?.checked).toBe(false);
+    expect(selectItem(nav, "bind-closedBrowRaises").action).toEqual({ kind: "setBind", key: "emergency", value: "closedBrowRaises" });
+    const after = buildMenus(["youtube"], { emergency: "closedBrowRaises" });
+    expect(visibleItems(nav, after).find((i) => i.id === "bind-closedBrowRaises")?.checked).toBe(true);
   });
 
   it("unknown ids don't change state", () => {

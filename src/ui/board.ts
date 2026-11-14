@@ -10,6 +10,9 @@ import { parseEnabled, toggleMacro } from "../macros/catalog";
 import { openMacro } from "../macros/open";
 import { PROFILE } from "../profile/profile";
 import { fractionLeft, isDue, remainingMs, type PendingSpeech } from "./pendingSpeech";
+import { icon } from "./icons";
+import { parseBinds, type Binds } from "../events/emergencyGesture";
+import { attempt, listenForAck, sendPush } from "../emergency/notify";
 
 export interface BoardCallbacks {
   onCalibrate: () => void;
@@ -18,6 +21,8 @@ export interface BoardCallbacks {
   speakDelayMs: (quick: boolean) => number;
   /** user cancelled a phrase — a signal of mistakes / fatigue */
   onUndo: () => void;
+  /** the user changed a bind (e.g. emergency gesture) */
+  onBindsChange: (binds: Binds) => void;
 }
 
 /** How a tile may be selected. dwellMs null = use the normal method (brow raise or normal dwell). */
@@ -28,8 +33,10 @@ export interface SelectRule {
 
 const NORMAL: SelectRule = { dwellMs: null, browAllowed: true };
 const ALARM_STOP_RULE: SelectRule = { dwellMs: 3000, browAllowed: false }; // deliberately hard to hit by accident
-const QUICK_RULE: SelectRule = { dwellMs: 600, browAllowed: true }; // Cancel / Say it now: a quick look is enough
+const CANCEL_RULE: SelectRule = { dwellMs: 600, browAllowed: true }; // Cancel: a quick look is enough
 const MACROS_KEY = "signalspeak.macros";
+const BINDS_KEY = "signalspeak.binds";
+const ASSIST_ACK_WINDOW_MS = 5 * 60_000; // how long we listen for "On my way" after an assistance request
 
 export class Board {
   private nav: NavState = initialNav();
@@ -39,14 +46,15 @@ export class Board {
   private alarm: Alarm;
   private cb: BoardCallbacks;
   private enabledMacros = loadMacros();
-  private menus: Record<string, Menu> = buildMenus(this.enabledMacros);
+  private binds: Binds = loadBinds();
+  private menus: Record<string, Menu> = buildMenus(this.enabledMacros, this.binds);
   private pending: PendingSpeech | null = null;
   private pendingTimer: number | null = null;
+  private stopAssistAck: () => void = () => {};
   private pendingEl: HTMLDivElement;
   private pendingText: HTMLDivElement;
   private pendingBar: HTMLDivElement;
   private cancelTile: HTMLDivElement;
-  private sendTile: HTMLDivElement;
   /** bumped on every screen change so the selection logic can restart cleanly */
   version = 0;
 
@@ -61,28 +69,30 @@ export class Board {
     this.pendingEl.id = "pending";
     this.pendingEl.hidden = true;
     this.pendingEl.innerHTML = `
-      <div class="pendingInfo"><div class="pendingText"></div><div class="pendingTrack"><div class="pendingBar"></div></div></div>
-      <div class="tile sendTile"><span class="icon">✓</span><span>Say it now</span></div>
-      <div class="tile cancelTile"><span class="icon">✖</span><span>Cancel</span><small>or look away</small></div>`;
+      <div class="pendingInfo">
+        <div class="pendingLabel">About to say</div>
+        <div class="pendingText"></div>
+        <div class="pendingTrack"><div class="pendingBar"></div></div>
+      </div>
+      <div class="tile cancelTile">${icon("x")}<span>Cancel</span><small>or look away</small></div>`;
     this.pendingText = this.pendingEl.querySelector(".pendingText")!;
     this.pendingBar = this.pendingEl.querySelector(".pendingBar")!;
     this.cancelTile = this.pendingEl.querySelector(".cancelTile")!;
-    this.sendTile = this.pendingEl.querySelector(".sendTile")!;
     document.body.appendChild(this.pendingEl);
 
     this.render();
   }
 
-  /** Elements the gaze cursor can currently select. While a phrase is pending, only the bar's tiles. */
+  /** Elements the gaze cursor can currently select. While a phrase is pending, only Cancel. */
   targets(): HTMLElement[] {
     if (this.alarm.active) return [this.alarm.stopTile];
-    if (this.pending) return [this.sendTile, this.cancelTile];
+    if (this.pending) return [this.cancelTile];
     return this.tiles;
   }
 
   selectRule(el: HTMLElement): SelectRule {
     if (el === this.alarm.stopTile) return ALARM_STOP_RULE;
-    if (el === this.cancelTile || el === this.sendTile) return QUICK_RULE;
+    if (el === this.cancelTile) return CANCEL_RULE;
     return NORMAL;
   }
 
@@ -99,6 +109,10 @@ export class Board {
     this.cancelPending("looked away");
   }
 
+  get currentBinds(): Binds {
+    return this.binds;
+  }
+
   activate(el: HTMLElement): void {
     if (el === this.alarm.stopTile) {
       this.alarm.stop();
@@ -108,10 +122,6 @@ export class Board {
     }
     if (el === this.cancelTile) {
       this.cancelPending();
-      return;
-    }
-    if (el === this.sendTile) {
-      this.sayNow();
       return;
     }
     flash(el);
@@ -126,6 +136,7 @@ export class Board {
   triggerEmergency(): void {
     if (this.alarm.active) return;
     this.clearPending();
+    this.stopAssistAck(); // the alarm has its own "on my way" listener
     this.alarm.start();
     this.version++;
   }
@@ -133,7 +144,7 @@ export class Board {
   private run(a: Action): void {
     switch (a.kind) {
       case "speak":
-        this.schedule(a.text, !!a.quick);
+        this.schedule(a.text, !!a.quick, a.notify);
         break;
       case "emergency":
         this.triggerEmergency();
@@ -147,19 +158,23 @@ export class Board {
       case "toggleMacro":
         this.enabledMacros = toggleMacro(this.enabledMacros, a.macroId);
         saveMacros(this.enabledMacros);
-        this.menus = buildMenus(this.enabledMacros);
+        this.menus = buildMenus(this.enabledMacros, this.binds);
         this.render();
         break;
-      case "placeholder":
-        this.cb.onMessage(a.text);
+      case "setBind":
+        this.binds = { ...this.binds, [a.key]: a.value };
+        saveBinds(this.binds);
+        this.menus = buildMenus(this.enabledMacros, this.binds);
+        this.render();
+        this.cb.onBindsChange(this.binds);
         break;
     }
   }
 
   // ---------- undo before speaking ----------
-  private schedule(text: string, quick: boolean): void {
+  private schedule(text: string, quick: boolean, notify?: "plain" | "ack"): void {
     this.clearPending();
-    this.pending = { text, startedAt: performance.now(), delayMs: this.cb.speakDelayMs(quick) };
+    this.pending = { text, startedAt: performance.now(), delayMs: this.cb.speakDelayMs(quick), notify };
     this.pendingEl.hidden = false;
     this.version++;
     this.updatePending();
@@ -171,7 +186,7 @@ export class Board {
     if (!p) return;
     const now = performance.now();
     if (isDue(p, now)) return this.sayNow();
-    this.pendingText.textContent = `Saying “${p.text}” in ${Math.ceil(remainingMs(p, now) / 1000)} s`;
+    this.pendingText.textContent = `“${p.text}”  ·  ${Math.ceil(remainingMs(p, now) / 1000)} s`;
     this.pendingBar.style.transform = `scaleX(${fractionLeft(p, now)})`;
   }
 
@@ -180,7 +195,40 @@ export class Board {
     if (!p) return;
     this.clearPending();
     speak(p.text);
-    this.cb.onMessage(`🔊 “${p.text}”`);
+    this.cb.onMessage(`Said “${p.text}”`);
+    if (p.notify) this.notifyCaregiver(p.text, p.notify === "ack");
+  }
+
+  /**
+   * Non-emergency request to the caregiver's phone: a normal/high-priority push with the phrase.
+   * No phone call and no 911 escalation — those are reserved for the Emergency flow (ui/alarm.ts).
+   */
+  private notifyCaregiver(text: string, askAck: boolean): void {
+    const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    attempt(() =>
+      sendPush({
+        title: askAck ? "Caregiver needed" : "Request",
+        message: `${text} (${time})`,
+        priority: askAck ? 4 : 3,
+        tags: [askAck ? "bell" : "speech_balloon"],
+        askAck,
+      }),
+    ).then((r) => this.cb.onMessage(`Said “${text}” · ${r === "Push sent" ? "caregiver notified" : r}`));
+    if (!askAck || this.alarm.active) return;
+    // Tell the user when the caregiver taps "I'm on my way" (they may not be able to see the screen well).
+    this.stopAssistAck();
+    const unsub = listenForAck(() => {
+      stop();
+      speak("Your caregiver is on the way");
+      this.cb.onMessage("Caregiver is on the way");
+    });
+    const timer = window.setTimeout(() => stop(), ASSIST_ACK_WINDOW_MS);
+    const stop = () => {
+      unsub();
+      clearTimeout(timer);
+      this.stopAssistAck = () => {};
+    };
+    this.stopAssistAck = stop;
   }
 
   private cancelPending(reason?: string): void {
@@ -188,7 +236,7 @@ export class Board {
     const text = this.pending.text;
     this.clearPending();
     this.cb.onUndo();
-    this.cb.onMessage(`✖ Cancelled “${text}”${reason ? ` (${reason})` : ""}`);
+    this.cb.onMessage(`Cancelled “${text}”${reason ? ` — ${reason}` : ""}`);
   }
 
   private clearPending(): void {
@@ -209,11 +257,11 @@ export class Board {
     if (menu.view === "about") this.grid.appendChild(renderAboutCard(PROFILE));
     this.tiles = visibleItems(this.nav, this.menus).map((item) => {
       const el = document.createElement("div");
-      el.className = `tile ${item.tone ?? ""} ${item.checked === false ? "off" : ""}`;
+      el.className = `tile ${item.tone ?? ""} ${item.checked === undefined ? "" : item.checked ? "on" : "off"}`;
       el.dataset.id = item.id;
       if (item.tone === "pain") el.style.setProperty("--pain", item.label);
-      const check = item.checked === undefined ? "" : `<span class="check">${item.checked ? "✓" : ""}</span>`;
-      el.innerHTML = `${check}${item.icon ? `<span class="icon">${item.icon}</span>` : ""}<span>${item.label}</span>`;
+      const check = item.checked === undefined ? "" : `<span class="check">${item.checked ? icon("check") : ""}</span>`;
+      el.innerHTML = `${check}${icon(item.icon)}<span>${item.label}</span>${item.sub ? `<small>${item.sub}</small>` : ""}`;
       this.grid.appendChild(el);
       return el;
     });
@@ -236,6 +284,23 @@ function loadMacros(): string[] {
     return parseEnabled(raw ? JSON.parse(raw) : undefined);
   } catch {
     return parseEnabled(undefined);
+  }
+}
+
+function loadBinds(): Binds {
+  try {
+    const raw = localStorage.getItem(BINDS_KEY);
+    return parseBinds(raw ? JSON.parse(raw) : undefined);
+  } catch {
+    return parseBinds(undefined);
+  }
+}
+
+function saveBinds(b: Binds): void {
+  try {
+    localStorage.setItem(BINDS_KEY, JSON.stringify(b));
+  } catch {
+    /* storage unavailable */
   }
 }
 

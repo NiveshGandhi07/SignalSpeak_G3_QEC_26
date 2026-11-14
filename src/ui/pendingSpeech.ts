@@ -6,6 +6,8 @@ export interface PendingSpeech {
   text: string;
   startedAt: number;
   delayMs: number;
+  /** send to the caregiver's phone once actually spoken (never if cancelled) */
+  notify?: "plain" | "ack";
 }
 
 export function remainingMs(p: PendingSpeech, now: number): number {

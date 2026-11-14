@@ -18,5 +18,5 @@ export async function openMacro(id: string): Promise<string> {
     /* server not available — fall through */
   }
   if (m.target.kind === "url" && window.open(m.target.url, "_blank")) return `Opening ${m.label}…`;
-  return `⚠️ Couldn't open ${m.label} (start the app with npm run dev)`;
+  return `Couldn't open ${m.label} — start the app with npm run dev`;
 }

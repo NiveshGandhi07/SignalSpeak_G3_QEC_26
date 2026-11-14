@@ -6,7 +6,7 @@
 // -> head-pose-compensated gaze model -> stabilised on-screen cursor.
 // Select: look at a tile, then raise the eyebrows. If the brow raise is too weak to detect reliably,
 // the app falls back to dwell (look at a tile and hold) — the interface adapts to the user.
-// Emergency from any screen: two long blinks (1–3 s each) within 5 s.
+// Emergency from any screen: a gesture the user picks under Binds (default: two long blinks within 5 s).
 // Fatigue-aware pacing: timings, brow sensitivity and selection method adapt as the user tires.
 // AI-assisted: written with help from Claude (Anthropic).
 import "./style.css";
@@ -18,7 +18,7 @@ import { fitCalibration, predictScreen, type CalSample, type Calibration } from 
 import { Stabilizer } from "./gaze/stabilizer";
 import { Board } from "./ui/board";
 import { browScore, calibrateBrow, initialBrow, scaleBrow, stepBrow, type BrowParams } from "./events/brow";
-import { initialLongBlink, stepLongBlink } from "./events/longBlink";
+import { createEmergencyDetector, EMERGENCY_BINDS, type EmergencyDetector } from "./events/emergencyGesture";
 import { FatigueTracker, type Pacing } from "./adapt/fatigue";
 import { chirp } from "./ui/sound";
 import { isLookingAway } from "./ui/pendingSpeech";
@@ -45,7 +45,7 @@ app.innerHTML = `
   <div id="fatigue" title="Energy"><span class="fLabel">Energy</span><div class="fTrack"><div class="fBar"></div></div><span class="fText"></span></div>
   <div id="board"></div>
   <div id="calDot" hidden></div>
-  <div id="cursor" hidden><svg viewBox="0 0 40 40"><circle class="ring" cx="20" cy="20" r="17"/></svg></div>
+  <div id="cursor" hidden><svg viewBox="0 0 40 40"><circle class="track" cx="20" cy="20" r="17"/><circle class="ring" cx="20" cy="20" r="17"/><circle class="dot" cx="20" cy="20" r="3"/></svg></div>
   <pre id="debug"></pre>
 `;
 const video = document.querySelector<HTMLVideoElement>("#cam")!;
@@ -66,6 +66,14 @@ const board = new Board(document.querySelector<HTMLDivElement>("#board")!, {
   onMessage: (text) => (statusEl.textContent = text),
   speakDelayMs: (quick) => (quick ? fatigue.pacing().quickSpeakDelayMs : fatigue.pacing().speakDelayMs),
   onUndo: () => fatigue.recordUndo(performance.now()),
+  onBindsChange: () => {
+    rebuildEmergencyDetector();
+    const b = EMERGENCY_BINDS.find((x) => x.id === emergency.bind)!;
+    statusEl.textContent =
+      emergency.bind === board.currentBinds.emergency
+        ? `Emergency gesture: ${b.label} — ${b.sub}`
+        : `That gesture needs a calibrated eyebrow raise — using "${b.label}" instead`;
+  },
 });
 
 // ---------- state ----------
@@ -87,7 +95,10 @@ let hoverSince = 0;
 let rearmUntil = 0;
 let boardVersion = -1;
 let brow = initialBrow();
-let longBlink = initialLongBlink();
+let emergency: EmergencyDetector = createEmergencyDetector(board.currentBinds.emergency, cal?.brow ?? null);
+function rebuildEmergencyDetector(): void {
+  emergency = createEmergencyDetector(board.currentBinds.emergency, cal?.brow ?? null);
+}
 // current eyebrow raise, for measuring how high raises go (fatigue)
 let raisePeak = 0, raising = false, raiseClicked = false;
 let awaySince: number | null = null;
@@ -124,6 +135,7 @@ function startCalibration(now: number): void {
   mode = { kind: "calibrate", idx: 0, start: now, samples: [], browRest: [], browRaised: [] };
   cursor.hidden = true;
   board.setDimmed(true);
+  document.body.classList.add("calibrating");
 }
 
 // ---------- per-frame ----------
@@ -167,7 +179,8 @@ function onFrame(lm: FaceLandmarker, now: number): void {
     case "waitFace": {
       mode.since ??= now;
       const left = Math.ceil((FACE_HOLD_MS - (now - mode.since)) / 1000);
-      statusEl.textContent = `Face found — sit comfortably. Calibration starts in ${Math.max(left, 0)}…`;
+      document.body.classList.add("calibrating");
+      statusEl.textContent = `Face found — sit comfortably. Calibration starts in ${Math.max(left, 0)}`;
       if (now - mode.since >= FACE_HOLD_MS) startCalibration(now);
       break;
     }
@@ -195,10 +208,10 @@ function stepCalibration(
   const [px, py] = pts[m.idx];
 
   statusEl.textContent = browPhase
-    ? "Now RAISE YOUR EYEBROWS and hold them up…"
+    ? "Now raise your eyebrows and hold them up"
     : headPhase
-      ? "Keep your eyes on the dot and gently move your head: left, right, up, down"
-      : `Calibration ${m.idx + 1}/${HEAD_IDX}: look at the dot`;
+      ? "Keep your eyes on the dot and gently move your head — left, right, up, down"
+      : `Look at the dot  ·  ${m.idx + 1} of ${HEAD_IDX}`;
   calDot.hidden = false;
   calDot.classList.toggle("pulse", headPhase || browPhase);
   calDot.classList.toggle("brow", browPhase);
@@ -223,6 +236,7 @@ function stepCalibration(
 function finishCalibration(m: Extract<Mode, { kind: "calibrate" }>): void {
   calDot.hidden = true;
   calDot.classList.remove("brow");
+  document.body.classList.remove("calibrating");
   board.setDimmed(false);
   board.goHome();
   try {
@@ -230,6 +244,7 @@ function finishCalibration(m: Extract<Mode, { kind: "calibrate" }>): void {
     saveCalibration(cal);
     stab.reset();
     brow = initialBrow();
+    rebuildEmergencyDetector();
     mode = { kind: "track" };
     statusEl.textContent =
       `Calibrated (avg error ${cal.errorPx.toFixed(0)} px). ` +
@@ -248,13 +263,13 @@ function stepTracking(g: ReturnType<typeof rawGaze>, blink: number, browVal: num
   if (!cal) return;
   const pace = fatigue.pacing();
 
-  // Emergency from any screen: two long blinks. A chirp confirms the first one (the user's eyes are closed).
-  const lb = stepLongBlink(longBlink, blink, now);
-  longBlink = lb.state;
-  if (!board.alarmActive && lb.event === "long") {
+  // Emergency from any screen (gesture chosen under Binds). A chirp marks each step, since the
+  // user's eyes are closed while performing it.
+  const em = emergency.step(blink, browVal, now);
+  if (!board.alarmActive && em.event === "progress") {
     chirp([660, 880]);
-    statusEl.textContent = "One more long blink for EMERGENCY";
-  } else if (!board.alarmActive && lb.event === "trigger") {
+    statusEl.textContent = `Emergency gesture ${em.count} of ${emergency.needed} — keep going`;
+  } else if (!board.alarmActive && em.event === "trigger") {
     chirp([880, 880, 880]);
     board.triggerEmergency();
   }
@@ -266,7 +281,8 @@ function stepTracking(g: ReturnType<typeof rawGaze>, blink: number, browVal: num
     const p = scaleBrow(cal.brow, pace.browThresholdScale);
     const r = stepBrow(brow, browVal, now, p);
     brow = r.state;
-    click = r.click && useBrow;
+    // no brow "clicks" while the eyes are closed: the user may be performing the emergency gesture
+    click = r.click && useBrow && blink <= BLINK_REJECT;
     browLevel = r.level;
     browsUp = browVal > p.low;
     trackRaise(cal.brow, browVal, browsUp, r.click, now);
@@ -320,7 +336,7 @@ function renderFatigue(pace: Pacing): void {
   fatigueBar.style.transform = `scaleX(${Math.max(0.04, energy)})`;
   fatigueBar.style.background = pace.level === "fresh" ? "#3fb950" : pace.level === "tired" ? "#e3b341" : "#f85149";
   fatigueText.textContent =
-    pace.level === "fresh" ? "Good" : pace.preferDwell ? "Resting brows — look & hold" : pace.level === "tired" ? "Tired — slower pace" : "Very tired — slow pace";
+    pace.level === "fresh" ? "Feeling good" : pace.preferDwell ? "Resting brows — look & hold to select" : pace.level === "tired" ? "Tired — pace slowed" : "Very tired — pace slowed";
 }
 
 function inRect(el: HTMLElement, x: number, y: number, margin: number): boolean {

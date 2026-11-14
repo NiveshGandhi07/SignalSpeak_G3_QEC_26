@@ -12,7 +12,10 @@ const TOPIC: string | undefined = import.meta.env.VITE_NTFY_TOPIC;
 export interface Alert {
   title: string;
   message: string;
+  /** emergency look: highest priority + siren tag. Otherwise `priority` (default 3 = normal). */
   urgent?: boolean;
+  priority?: 1 | 2 | 3 | 4 | 5;
+  tags?: string[];
   /** include the "I'm on my way" acknowledge button */
   askAck?: boolean;
 }
@@ -22,7 +25,7 @@ export async function attempt(fn: () => Promise<string>): Promise<string> {
   try {
     return await fn();
   } catch (e) {
-    return `⚠️ ${(e as Error).message}`;
+    return `Failed: ${(e as Error).message}`;
   }
 }
 
@@ -34,15 +37,15 @@ export async function sendPush(a: Alert): Promise<string> {
       topic: TOPIC,
       title: a.title,
       message: a.message,
-      priority: a.urgent ? 5 : 3,
-      tags: a.urgent ? ["rotating_light"] : ["information_source"],
+      priority: a.urgent ? 5 : (a.priority ?? 3),
+      tags: a.tags ?? (a.urgent ? ["rotating_light"] : ["information_source"]),
       actions: a.askAck
         ? [{ action: "http", label: "I'm on my way", url: `${NTFY}/${TOPIC}-ack`, method: "POST", body: "ack", clear: true }]
         : [],
     }),
   });
   if (!res.ok) throw new Error(`push failed (${res.status})`);
-  return "📱 push sent";
+  return "Push sent";
 }
 
 async function api<T>(path: string, body?: object): Promise<T> {
@@ -58,7 +61,7 @@ async function api<T>(path: string, body?: object): Promise<T> {
 
 export async function sendText(body: string): Promise<string> {
   await api("/api/sms", { body }).catch((e) => Promise.reject(new Error(`SMS: ${e.message}`)));
-  return "💬 text sent";
+  return "Text sent";
 }
 
 export interface PlacedCall {

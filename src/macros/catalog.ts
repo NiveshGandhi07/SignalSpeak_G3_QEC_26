@@ -13,14 +13,14 @@ export interface Macro {
 }
 
 export const CATALOG: Macro[] = [
-  { id: "youtube", label: "YouTube", icon: "▶️", target: { kind: "url", url: "https://www.youtube.com" } },
-  { id: "netflix", label: "Netflix", icon: "🎬", target: { kind: "url", url: "https://www.netflix.com" } },
-  { id: "spotify", label: "Spotify", icon: "🎵", target: { kind: "url", url: "https://open.spotify.com" } },
-  { id: "news", label: "News", icon: "📰", target: { kind: "url", url: "https://news.google.com" } },
-  { id: "gmail", label: "Gmail", icon: "✉️", target: { kind: "url", url: "https://mail.google.com" } },
-  { id: "weather", label: "Weather", icon: "⛅", target: { kind: "url", url: "https://www.theweathernetwork.com/en/city/ca/ontario/kingston/current" } },
-  { id: "calculator", label: "Calculator", icon: "🧮", target: { kind: "app", app: "calculator" } },
-  { id: "notepad", label: "Notepad", icon: "📝", target: { kind: "app", app: "notepad" } },
+  { id: "youtube", label: "YouTube", icon: "play", target: { kind: "url", url: "https://www.youtube.com" } },
+  { id: "netflix", label: "Netflix", icon: "film", target: { kind: "url", url: "https://www.netflix.com" } },
+  { id: "spotify", label: "Spotify", icon: "music", target: { kind: "url", url: "https://open.spotify.com" } },
+  { id: "news", label: "News", icon: "newspaper", target: { kind: "url", url: "https://news.google.com" } },
+  { id: "gmail", label: "Gmail", icon: "mail", target: { kind: "url", url: "https://mail.google.com" } },
+  { id: "weather", label: "Weather", icon: "cloud", target: { kind: "url", url: "https://www.theweathernetwork.com/en/city/ca/ontario/kingston/current" } },
+  { id: "calculator", label: "Calculator", icon: "calculator", target: { kind: "app", app: "calculator" } },
+  { id: "notepad", label: "Notepad", icon: "notepad", target: { kind: "app", app: "notepad" } },
 ];
 
 export const DEFAULT_MACROS = ["youtube", "spotify", "news", "calculator"];

@@ -1,15 +1,25 @@
+/* SignalSpeak — visual design.
+   Principles: one calm dark surface; colour is reserved for meaning (green = yes, rose = no,
+   red = emergency, teal = "you are here", amber = eyebrow raise); large targets; soft motion.
+   AI-assisted: written with help from Claude (Anthropic). */
+
 :root {
-  --bg: #0f1115;
-  --tile: #1c2029;
-  --tile-hover: #2a3550;
-  --accent: #4da3ff;
-  --text: #f2f4f8;
-  --muted: #9aa3b2;
-  --yes: #1f7a4a;
-  --no: #8a2d2d;
-  --danger: #c62828;
-  --nav: #262b36;
-  font: 20px/1.3 system-ui, "Segoe UI", Roboto, sans-serif;
+  --bg: #12151c;
+  --surface: #1b2029;
+  --surface-2: #232936;
+  --line: rgba(255, 255, 255, 0.07);
+  --text: #eef1f6;
+  --muted: #8d96a8;
+  --accent: #7fd1c3; /* hover ring + dwell progress */
+  --accent-soft: rgba(127, 209, 195, 0.14);
+  --brow: #f2c14e; /* eyebrow-raise progress */
+  --yes: #3fae7a;
+  --no: #d86a6a;
+  --danger: #e0443a;
+  --radius: 22px;
+  --shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+  font: 20px/1.3 "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 * { box-sizing: border-box; }
@@ -23,163 +33,190 @@ html, body {
   cursor: none; /* the gaze cursor is the only pointer */
 }
 
-/* ---------- top bar: status (left) + camera preview (right) ---------- */
+/* ================= header strip ================= */
+#status {
+  position: fixed;
+  top: 0;
+  left: 32px;
+  right: 500px;
+  height: 84px;
+  display: flex;
+  align-items: center;
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: 0.005em;
+  z-index: 5;
+}
+
+#fatigue {
+  position: fixed;
+  top: 22px;
+  right: 268px;
+  width: 210px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  gap: 6px 10px;
+  align-items: center;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  z-index: 5;
+}
+#fatigue .fTrack { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+#fatigue .fBar { height: 100%; width: 100%; transform-origin: left; background: var(--yes); transition: transform 0.6s, background 0.6s; }
+#fatigue .fText { grid-column: 1 / span 2; text-transform: none; letter-spacing: 0; font-size: 0.8rem; }
+
 #camWrap {
   position: fixed;
-  top: 8px;
-  right: 12px;
+  top: 14px;
+  right: 32px;
   width: 200px;
-  border-radius: 8px;
+  border-radius: 14px;
   overflow: hidden;
   transform: scaleX(-1); /* mirror video + mesh together so it feels like a mirror */
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
   z-index: 5;
   pointer-events: none;
 }
 #cam { display: block; width: 100%; }
 #mesh { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-#fatigue {
-  position: fixed;
-  top: 14px;
-  right: 230px;
-  width: 210px;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-rows: auto auto;
-  gap: 4px 8px;
-  align-items: center;
-  font-size: 0.8rem;
-  color: var(--muted);
-  z-index: 5;
-}
-#fatigue .fTrack { height: 12px; border-radius: 6px; background: #2a2f3a; overflow: hidden; }
-#fatigue .fBar { height: 100%; width: 100%; transform-origin: left; background: #3fb950; transition: transform 0.6s, background 0.6s; }
-#fatigue .fText { grid-column: 1 / span 2; font-size: 0.75rem; }
-
-/* ---------- undo-before-speaking bar ---------- */
-#pending {
-  position: fixed;
-  left: 24px;
-  right: 24px;
-  bottom: 24px;
-  height: 200px;
-  z-index: 12;
-  display: flex;
-  gap: 20px;
-  padding: 16px;
-  border-radius: 20px;
-  background: rgba(15, 17, 21, 0.96);
-  border: 3px solid var(--accent);
-  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
-}
-#pending[hidden] { display: none; }
-#pending .pendingInfo { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 16px; }
-#pending .pendingText { font-size: 2rem; font-weight: 700; }
-#pending .pendingTrack { height: 14px; border-radius: 7px; background: #2a2f3a; overflow: hidden; }
-#pending .pendingBar { height: 100%; background: var(--accent); transform-origin: left; }
-#pending .sendTile { width: 24%; background: var(--yes); font-size: 1.8rem; }
-#pending .cancelTile { width: 24%; background: #8a2d2d; font-size: 1.8rem; }
-#pending .cancelTile small { font-size: 0.9rem; font-weight: 500; opacity: 0.85; }
-
-#status {
-  position: fixed;
-  top: 8px;
-  left: 24px;
-  right: 460px;
-  min-height: 56px;
-  display: flex;
-  align-items: center;
-  font-size: 1.4rem;
-  font-weight: 600;
-  z-index: 5;
-}
-
-/* ---------- board ---------- */
+/* ================= board ================= */
 #board {
   position: fixed;
-  inset: 128px 24px 24px;
+  inset: 96px 32px 32px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  transition: opacity 0.3s;
+  gap: 14px;
+  transition: opacity 0.35s;
 }
-#board.dim { opacity: 0.1; }
-#board .crumb { color: var(--muted); font-size: 1rem; letter-spacing: 0.02em; }
+#board.dim { opacity: 0.08; }
+#board .crumb {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding-left: 4px;
+}
 #board .grid {
   flex: 1;
   display: grid;
   grid-auto-rows: 1fr;
-  gap: 20px;
+  gap: 18px;
+  min-height: 0;
 }
 
+/* ---- tiles ---- */
 .tile {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 8px;
+  gap: 14px;
+  padding: 18px;
   text-align: center;
-  background: var(--tile);
-  border: 4px solid transparent;
-  border-radius: 20px;
-  font-size: 1.8rem;
-  font-weight: 650;
-  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 1.45rem;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.005em;
+  --tone: var(--muted);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease;
 }
-.tile .icon { font-size: 2.6rem; line-height: 1; }
-.tile.yes { background: var(--yes); }
-.tile.no { background: var(--no); }
-.tile.danger { background: var(--danger); }
-.tile.nav { background: var(--nav); color: var(--muted); font-size: 1.4rem; }
-/* pain 1 (green) -> 10 (red) */
+.tile .ico {
+  width: 56px;
+  height: 56px;
+  padding: 12px;
+  border-radius: 16px;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 14%, transparent);
+  flex: 0 0 auto;
+}
+.tile small { font-size: 0.85rem; font-weight: 500; color: var(--muted); }
+
+/* tones: colour carries meaning */
+.tile.yes { --tone: var(--yes); }
+.tile.no { --tone: var(--no); }
+.tile.nav { --tone: var(--muted); background: transparent; color: var(--muted); font-size: 1.2rem; }
+.tile.danger {
+  --tone: #fff;
+  background: var(--danger);
+  border-color: transparent;
+  color: #fff;
+}
+.tile.danger .ico { background: rgba(255, 255, 255, 0.18); }
+/* pain 1 (calm) -> 10 (hot), kept muted so the whole grid doesn't shout */
 .tile.pain {
-  font-size: 3rem;
-  background: hsl(calc(130 - (var(--pain) - 1) * 14) 55% 32%);
+  font-size: 2.6rem;
+  font-weight: 700;
+  background: hsl(calc(150 - (var(--pain) - 1) * 16) 38% 26%);
+  border-color: transparent;
 }
-.tile { position: relative; }
+
+/* gaze states */
+.tile.hover {
+  transform: translateY(-3px);
+  border-color: transparent;
+  box-shadow: 0 0 0 3px var(--accent), var(--shadow);
+  background: var(--surface-2);
+}
+.tile.danger.hover { box-shadow: 0 0 0 3px #fff, var(--shadow); }
+.tile.selected {
+  background: var(--accent);
+  color: #0f1a18;
+  transition-duration: 0.05s;
+}
+.tile.selected .ico { color: #0f1a18; background: rgba(0, 0, 0, 0.12); }
+
+/* toggle tiles (Edit macros) */
 .tile .check {
   position: absolute;
-  top: 10px;
-  right: 14px;
-  width: 40px;
-  height: 40px;
+  top: 14px;
+  right: 16px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
-  border: 3px solid currentColor;
+  border: 2px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.6rem;
+  color: var(--accent);
 }
-.tile.off { opacity: 0.55; }
+.tile .check .ico { width: 100%; height: 100%; padding: 6px; background: none; color: inherit; border-radius: 0; }
+.tile.on .check { border-color: var(--accent); background: var(--accent-soft); }
+.tile.off { opacity: 0.5; }
 
-/* ---------- About me: card spans the right 2 columns, tiles in the left column (Back stays top-left) ---------- */
+/* ================= About me card ================= */
 .grid.about { grid-template-rows: repeat(2, 1fr); }
 .grid.about .aboutCard { grid-column: 2 / span 2; grid-row: 1 / span 2; min-height: 0; }
-.aboutCard {
-  display: flex;
-  justify-content: center;
-  align-items: stretch;
-}
+.aboutCard { display: flex; justify-content: center; align-items: stretch; }
 .cardInner {
   aspect-ratio: 5 / 3.4;
   max-height: 100%;
   max-width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-  border-radius: 22px;
-  border: 10px solid #e8c547;
-  background: linear-gradient(160deg, #fdf3c4, #f2d778 55%, #e3b94a);
+  gap: 10px;
+  padding: 18px;
+  border-radius: var(--radius);
+  border: 8px solid #d9b65a;
+  background: linear-gradient(165deg, #f8edc8, #ead27f 60%, #d9b65a);
   color: #2a2110;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow);
   overflow: hidden;
   font-size: 0.85rem;
 }
 .cardHead { display: flex; justify-content: space-between; align-items: baseline; }
-.cardName { font-size: 1.7rem; font-weight: 800; }
-.cardEnergy { font-weight: 700; color: #a3361b; }
+.cardName { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.01em; }
+.cardEnergy { font-weight: 600; font-size: 0.8rem; color: #8a4a1c; text-transform: uppercase; letter-spacing: 0.06em; }
 .cardArt {
   flex: 0 0 auto;
   height: 28%;
@@ -187,33 +224,51 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 4px solid #b8932d;
-  border-radius: 6px;
-  background: radial-gradient(circle, #cfe8ff, #7fb2e5);
+  border-radius: 12px;
+  background: radial-gradient(circle at 50% 40%, #e3f0ff, #86b3e4);
+  overflow: hidden;
 }
 .cardArt img { height: 100%; object-fit: cover; }
 .avatarEmoji { font-size: 4rem; line-height: 1; }
-.cardType {
-  text-align: center;
-  font-style: italic;
-  background: #c9a53c;
-  border-radius: 4px;
-  padding: 2px 8px;
-}
-.cardBody { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-height: 0; }
+.cardType { text-align: center; font-style: italic; color: #5a4518; }
+.cardBody { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; min-height: 0; }
 .cardCol { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-.ability { border-bottom: 1px solid rgba(42, 33, 16, 0.25); padding-bottom: 4px; }
-.abilityHead { display: flex; justify-content: space-between; font-size: 1rem; }
-.pips { letter-spacing: 2px; color: #a3361b; }
-.abilityText { opacity: 0.85; }
+.ability { border-bottom: 1px solid rgba(42, 33, 16, 0.18); padding-bottom: 4px; }
+.abilityHead { display: flex; justify-content: space-between; font-size: 0.95rem; }
+.pips { letter-spacing: 2px; color: #8a4a1c; }
+.abilityText { opacity: 0.8; }
 .weak { margin-top: auto; }
 .section ul { margin: 2px 0 0; padding-left: 18px; }
 .medical { color: #8a1c1c; }
 
-.tile.hover { border-color: var(--accent); transform: scale(1.02); filter: brightness(1.25); }
-.tile.selected { background: var(--accent); color: #000; }
+/* ================= undo-before-speaking sheet ================= */
+#pending {
+  position: fixed;
+  left: 32px;
+  right: 32px;
+  bottom: 32px;
+  height: 176px;
+  z-index: 12;
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.5);
+  animation: rise 0.22s ease-out;
+}
+#pending[hidden] { display: none; }
+@keyframes rise { from { transform: translateY(16px); opacity: 0; } }
+#pending .pendingInfo { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 14px; padding: 0 12px; min-width: 0; }
+#pending .pendingLabel { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+#pending .pendingText { font-size: 1.7rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#pending .pendingTrack { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+#pending .pendingBar { height: 100%; background: var(--accent); transform-origin: left; }
+#pending .tile { width: 260px; gap: 10px; font-size: 1.25rem; }
+#pending .cancelTile { --tone: var(--no); }
 
-/* ---------- emergency alarm ---------- */
+/* ================= emergency alarm ================= */
 #alarm {
   position: fixed;
   inset: 0;
@@ -222,78 +277,112 @@ html, body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 24px;
-  background: #7a0000;
-  animation: alarmFlash 0.8s steps(1) infinite;
+  gap: 22px;
+  padding: 32px;
+  background: #8c1a1a;
+  animation: alarmPulse 1.6s ease-in-out infinite; /* slow pulse, not a strobe */
 }
 #alarm[hidden] { display: none; }
-@keyframes alarmFlash { 50% { background: #d50000; } }
-.alarmText { font-size: 3rem; font-weight: 800; text-align: center; }
-.alarmStatus { font-size: 2rem; font-weight: 700; }
-.alarmChannels { font-size: 1rem; opacity: 0.85; min-height: 1.3em; }
-/* shown inline (not on top) so it never covers the "I'm OK" tile */
-.call911 {
-  padding: 20px 48px;
-  border-radius: 20px;
-  background: #fff;
-  color: #000;
+@keyframes alarmPulse { 50% { background: #b42323; } }
+.alarmText {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 2.6rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   text-align: center;
-  font-size: 1.3rem;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+.alarmText .ico { width: 52px; height: 52px; }
+.alarmStatus { font-size: 1.6rem; font-weight: 600; }
+.alarmChannels { font-size: 0.95rem; opacity: 0.85; min-height: 1.3em; }
+.call911 {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 18px 40px;
+  border-radius: var(--radius);
+  background: #fff;
+  color: #1a1a1a;
+  text-align: center;
+  font-size: 1.1rem;
+  box-shadow: var(--shadow);
 }
 .call911[hidden] { display: none; }
-.call911Title { font-size: 2.6rem; font-weight: 800; color: #c62828; margin-bottom: 8px; }
-.call911 .sim { margin-top: 12px; font-size: 0.9rem; color: #555; }
+.call911Title { display: flex; align-items: center; gap: 10px; font-size: 2rem; font-weight: 800; color: var(--danger); }
+.call911 .sim { margin-top: 6px; font-size: 0.8rem; color: #666; text-transform: uppercase; letter-spacing: 0.06em; }
 .alarmStop {
-  width: min(520px, 80vw);
-  height: 220px;
+  width: min(560px, 80vw);
+  height: 200px;
   background: #fff;
-  color: #000;
+  color: #1a1a1a;
+  border-color: transparent;
+  --tone: #1a1a1a;
 }
+.alarmStop .ico { background: rgba(0, 0, 0, 0.07); }
+.alarmStop.hover { box-shadow: 0 0 0 4px var(--accent), var(--shadow); }
 
-/* ---------- calibration + cursor ---------- */
+/* ================= calibration ================= */
+body.calibrating #status {
+  left: 0;
+  right: 0;
+  top: 18%;
+  height: auto;
+  justify-content: center;
+  text-align: center;
+  font-size: 1.8rem;
+  font-weight: 600;
+  padding: 0 10vw;
+}
+body.calibrating #fatigue { opacity: 0; }
+
 #calDot {
   position: fixed;
-  left: -20px;
-  top: -20px;
-  width: 40px;
-  height: 40px;
+  left: -18px;
+  top: -18px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  background: #ff4d6d;
-  box-shadow: 0 0 0 6px rgba(255, 77, 109, 0.3);
+  background: var(--accent);
+  box-shadow: 0 0 0 8px var(--accent-soft), 0 0 30px rgba(127, 209, 195, 0.5);
   z-index: 10;
+  transition: transform 0.25s ease-out;
 }
 #calDot.pulse { animation: pulse 1s ease-in-out infinite alternate; }
-@keyframes pulse { to { box-shadow: 0 0 0 16px rgba(255, 77, 109, 0.15); } }
+@keyframes pulse { to { box-shadow: 0 0 0 20px rgba(127, 209, 195, 0.08), 0 0 40px rgba(127, 209, 195, 0.5); } }
+#calDot.brow { background: var(--brow); box-shadow: 0 0 0 8px rgba(242, 193, 78, 0.18), 0 0 30px rgba(242, 193, 78, 0.5); }
 
+/* ================= gaze cursor ================= */
 #cursor {
   position: fixed;
-  left: -20px;
-  top: -20px;
-  width: 40px;
-  height: 40px;
+  left: -22px;
+  top: -22px;
+  width: 44px;
+  height: 44px;
   pointer-events: none;
   z-index: 20;
 }
-#cursor svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+#cursor svg { width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
 #cursor .ring {
-  fill: rgba(77, 163, 255, 0.35);
+  fill: rgba(255, 255, 255, 0.06);
   stroke: var(--accent);
-  stroke-width: 4;
+  stroke-width: 3.5;
   transition: stroke-dashoffset 0.08s linear;
 }
-/* brow mode: ring shows how far the eyebrows are raised (full ring = click) */
-#cursor.browMode .ring { stroke: #ffd54f; fill: rgba(255, 213, 79, 0.25); }
-/* calibration: "raise your eyebrows" step */
-#calDot.brow { background: #ffd54f; box-shadow: 0 0 0 6px rgba(255, 213, 79, 0.35); }
+#cursor .dot { fill: #fff; opacity: 0.9; }
+#cursor .track { fill: none; stroke: rgba(255, 255, 255, 0.22); stroke-width: 3.5; }
+#cursor.browMode .ring { stroke: var(--brow); }
 
+/* ================= debug readout ================= */
 #debug {
   position: fixed;
-  left: 12px;
-  bottom: 4px;
+  left: 14px;
+  bottom: 8px;
   margin: 0;
-  font-size: 11px;
-  opacity: 0.5;
+  font: 10.5px/1.4 ui-monospace, Consolas, monospace;
+  color: var(--muted);
+  opacity: 0.55;
   z-index: 5;
   pointer-events: none;
 }
