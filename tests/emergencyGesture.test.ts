@@ -1,7 +1,7 @@
 // Tests for the selectable emergency gestures. Test framework: Vitest (MIT) https://vitest.dev
 // AI-assisted: written with help from Claude (Anthropic).
 import { describe, expect, it } from "vitest";
-import { createEmergencyDetector, parseBinds, type GestureEvent } from "../src/events/emergencyGesture";
+import { applyBind, createEmergencyDetector, DEFAULT_BINDS, parseBinds, type GestureEvent } from "../src/events/emergencyGesture";
 import type { BrowParams } from "../src/events/brow";
 
 const BROW: BrowParams = { baseline: 0.1, high: 0.3, low: 0.2 };
@@ -69,9 +69,58 @@ describe("bind: two long blinks (default)", () => {
 });
 
 describe("parseBinds", () => {
-  it("accepts a known bind and falls back on junk", () => {
-    expect(parseBinds({ emergency: "twoLongCloses" })).toEqual({ emergency: "twoLongCloses" });
-    expect(parseBinds({ emergency: "nope" })).toEqual({ emergency: "twoLongBlinks" });
-    expect(parseBinds(null)).toEqual({ emergency: "twoLongBlinks" });
+  it("accepts known binds and falls back on junk", () => {
+    expect(parseBinds({ emergency: "twoLongCloses", calibrate: "closedBrowRaises", painCheck: false })).toEqual({ emergency: "twoLongCloses", calibrate: "closedBrowRaises", painCheck: false });
+    expect(parseBinds({ emergency: "nope", calibrate: 7 })).toEqual(DEFAULT_BINDS);
+    expect(parseBinds(null)).toEqual({ emergency: "twoLongBlinks", calibrate: "twoLongCloses", painCheck: true });
+  });
+  it("migrates old saved binds (emergency only) to the default recalibrate gesture", () => {
+    expect(parseBinds({ emergency: "closedBrowRaises" })).toEqual({ emergency: "closedBrowRaises", calibrate: "twoLongCloses", painCheck: true });
+  });
+  it("never lets one gesture do both jobs — Emergency wins", () => {
+    expect(parseBinds({ emergency: "twoLongCloses" })).toMatchObject({ emergency: "twoLongCloses", calibrate: "off" });
+  });
+});
+
+describe("applyBind", () => {
+  it("changes the recalibrate gesture, or turns it off", () => {
+    expect(applyBind(DEFAULT_BINDS, "calibrate", "closedBrowRaises")).toEqual({ ...DEFAULT_BINDS, calibrate: "closedBrowRaises" });
+    expect(applyBind(DEFAULT_BINDS, "calibrate", "off").calibrate).toBe("off");
+  });
+  it("refuses to reuse the emergency gesture for recalibrate (same object back)", () => {
+    expect(applyBind(DEFAULT_BINDS, "calibrate", "twoLongBlinks")).toBe(DEFAULT_BINDS);
+  });
+  it("refuses to reuse the recalibrate gesture for Emergency too (exclusive both ways)", () => {
+    expect(applyBind(DEFAULT_BINDS, "emergency", "twoLongCloses")).toBe(DEFAULT_BINDS);
+    expect(applyBind(DEFAULT_BINDS, "emergency", "closedBrowRaises")).toEqual({ ...DEFAULT_BINDS, emergency: "closedBrowRaises" });
+  });
+  it("once Recalibrate is off, Emergency may take any gesture", () => {
+    const off = applyBind(DEFAULT_BINDS, "calibrate", "off");
+    expect(applyBind(off, "emergency", "twoLongCloses").emergency).toBe("twoLongCloses");
+  });
+  it("after any sequence of changes the two binds never share a gesture", () => {
+    const keys = ["emergency", "calibrate"] as const;
+    const vals = ["twoLongBlinks", "twoLongCloses", "closedBrowRaises", "off"] as const;
+    let b = DEFAULT_BINDS;
+    for (let i = 0; i < 200; i++) {
+      b = applyBind(b, keys[(i * 7) % 2], vals[(i * 5 + (i >> 2)) % 4]);
+      expect(b.emergency).not.toBe(b.calibrate);
+    }
+  });
+  it("Emergency can never be turned off", () => {
+    expect(applyBind(DEFAULT_BINDS, "emergency", "off")).toBe(DEFAULT_BINDS);
+  });
+});
+
+describe("recalibrate and emergency detectors side by side (default binds)", () => {
+  it("two 3-second closes fire recalibrate but not emergency", () => {
+    const segs: [number, number, number][] = [[SHUT, REST, 3200], [OPEN, REST, 1500], [SHUT, REST, 3200], [OPEN, REST, 200]];
+    expect(run(createEmergencyDetector("twoLongCloses", BROW), segs)).toContain("trigger");
+    expect(run(createEmergencyDetector("twoLongBlinks", BROW), segs)).toEqual([]);
+  });
+  it("two long blinks fire emergency but not recalibrate", () => {
+    const segs: [number, number, number][] = [[SHUT, REST, 1300], [OPEN, REST, 600], [SHUT, REST, 1300], [OPEN, REST, 200]];
+    expect(run(createEmergencyDetector("twoLongBlinks", BROW), segs)).toContain("trigger");
+    expect(run(createEmergencyDetector("twoLongCloses", BROW), segs)).toEqual([]);
   });
 });

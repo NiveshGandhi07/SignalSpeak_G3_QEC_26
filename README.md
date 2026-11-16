@@ -29,23 +29,38 @@ compensated for but never required, so the app keeps working as head control fad
 
 ## Running it
 
-Requirements: Node.js 20+, Chrome or Edge, a webcam. Works offline once loaded (the face model and
-WebAssembly runtime are served from `public/`).
+### Desktop app (recommended)
+
+SignalSpeak is packaged as a Windows desktop app: one full-screen window that starts hands-free (camera
+allowed automatically, sound without a click), keeps the screen awake, recovers by itself if the
+interface crashes, and works offline.
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
+npm run app        # build and start the desktop app
+npm run dist       # build the installer: release/SignalSpeak Setup 1.0.0.exe
 npm test           # Vitest unit tests (no webcam needed)
 ```
 
-**Hands-free demo launch (Windows):** double-click `start-demo.bat` (or `npm run demo`). It starts the
-server and opens Chrome full-screen with the camera pre-granted and sound allowed without a click, so no
-permission prompt or pop-up has to be dismissed. The app requests video only, never the microphone.
+Close the app with Alt+F4.
 
-**Caregiver notifications (optional):** copy `.env.example` to `.env.local` and set `VITE_NTFY_TOPIC`
-to a hard-to-guess topic; the caregiver subscribes to it in the free ntfy app. Twilio variables enable the
-phone call and text message (trial accounts are limited — see comments in `vite.config.ts`).
-`.env.local` is git-ignored and never committed.
+**Caregiver notifications (optional, set up once by a caregiver):** copy `.env.example` to
+`%APPDATA%\SignalSpeak\config.env` and fill it in. On the next start the app encrypts the settings with
+the Windows credential store and deletes the plain-text file. `NTFY_TOPIC` must be a long, hard-to-guess
+name; the caregiver subscribes to it in the free ntfy app. The Twilio settings enable the phone call and
+text message (trial accounts are limited — see `electron/backend.ts`). `AUTO_START=true` starts
+SignalSpeak when the user signs in to Windows.
+
+### In a browser (development)
+
+Requirements: Node.js 20+, Chrome or Edge, a webcam.
+
+```bash
+npm run dev        # http://localhost:5173
+```
+
+Settings come from `.env.local` (same format, git-ignored, never committed). `start-demo.bat` (or
+`npm run demo`) starts the dev server and opens Chrome full-screen with the camera pre-granted.
 
 ## How it works
 
@@ -66,7 +81,8 @@ webcam → MediaPipe Face Landmarker → gaze features / brow level / eye closur
 | Events | `src/events/brow.ts`, `longBlink.ts`, `emergencyGesture.ts` | Hysteresis + hold + refractory brow click; selectable emergency gestures |
 | Adaptation | `src/adapt/fatigue.ts` | Latency, brow amplitude and undo rate → pacing |
 | Interface | `src/ui/*`, `src/main.ts` | Menu state machine, undo-before-speaking, alarm, About card, Help |
-| Output | `src/tts/speak.ts`, `src/emergency/*`, `src/macros/*`, `vite.config.ts` | Web Speech API, ntfy push, Twilio relay (server-side), OS opener for shortcuts |
+| Output | `src/tts/speak.ts`, `src/emergency/*`, `src/macros/*` | Web Speech API; requests to the trusted backend for push, call, text and shortcuts |
+| Desktop app | `electron/main.ts`, `preload.ts`, `backend.ts`, `secrets.ts`, `security.ts` | Sandboxed window, encrypted settings, ntfy + Twilio, validation and rate limits — see [SECURITY.md](SECURITY.md) |
 
 Every layer below the UI is a pure function or state machine, which is why the test suite can cover
 calibration, gesture detection, fatigue pacing and emergency escalation without a webcam.
@@ -102,19 +118,23 @@ assets included in, or adapted into, this repository; the rest are documentation
 4. **(code)** Google, Face Landmarker model `face_landmarker.task` (float16, v1), Apache-2.0. https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task — stored in `public/face_landmarker.task`.
 5. Google AI Edge, MediaPipe Face Mesh canonical landmark topology (eye-corner, lid and iris indices 468–477). https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/modules/face_geometry/data/canonical_face_model_uv_visualization.png — index constants in `src/gaze/features.ts`.
 6. G. Casiez, N. Roussel and D. Vogel, "1€ Filter: A Simple Speed-based Low-pass Filter for Noisy Input in Interactive Systems," *Proc. CHI 2012*, pp. 2527–2530. https://gery.casiez.net/1euro/ — algorithm implemented in `src/gaze/oneEuro.ts`.
-7. **(code)** Evan You et al., *Vite* v8.3.8 (MIT). https://vite.dev — dev server / bundler; project scaffolded with `create-vite` (vanilla-ts template). `vite.config.ts` plugins are our own.
+7. **(code)** Evan You et al., *Vite* v8.3.8 (MIT). https://vite.dev — dev server / bundler; project scaffolded with `create-vite` (vanilla-ts template). The `vite.config.ts` plugin is our own.
 8. **(code)** *Vitest* v5.1.0 (MIT). https://vitest.dev — test framework for `tests/`.
 9. **(code)** Microsoft, *TypeScript* v7.0.2 (Apache-2.0). https://www.typescriptlang.org
-10. Philipp C. Heckel, *ntfy* (Apache-2.0 / GPL-2.0). https://ntfy.sh, https://docs.ntfy.sh — HTTP push-notification service used for caregiver alerts and the "I'm on my way" acknowledgement (`src/emergency/notify.ts`).
-11. Twilio, "Message Resource," *Programmable Messaging API*. https://www.twilio.com/docs/messaging/api/message-resource — SMS relay in `vite.config.ts`.
-12. Twilio, "Call Resource" and "TwiML `<Say>`," *Programmable Voice*. https://www.twilio.com/docs/voice/api/call-resource, https://www.twilio.com/docs/voice/twiml/say — caregiver phone call in `vite.config.ts`.
+10. Philipp C. Heckel, *ntfy* (Apache-2.0 / GPL-2.0). https://ntfy.sh, https://docs.ntfy.sh — HTTP push-notification service used for caregiver alerts and the "I'm on my way" acknowledgement (`electron/backend.ts`).
+11. Twilio, "Message Resource," *Programmable Messaging API*. https://www.twilio.com/docs/messaging/api/message-resource — text message in `electron/backend.ts`.
+12. Twilio, "Call Resource" and "TwiML `<Say>`," *Programmable Voice*. https://www.twilio.com/docs/voice/api/call-resource, https://www.twilio.com/docs/voice/twiml/say — caregiver phone call in `electron/backend.ts`.
 13. Twilio, "Trial account limitations." https://www.twilio.com/docs/usage/trials — explains the fallback to Twilio's sample call/texts on trial accounts.
 14. MDN Web Docs, "Web Speech API — SpeechSynthesis." https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis — speech output in `src/tts/speak.ts`.
 15. MDN Web Docs, "Web Audio API." https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API — alarm beeps and gesture chirps (`src/ui/alarm.ts`, `src/ui/sound.ts`).
 16. MDN Web Docs, "MediaDevices.getUserMedia()." https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia — webcam access.
 17. P. Beverloo, "List of Chromium Command Line Switches." https://peter.sh/experiments/chromium-command-line-switches/ — flags used by `start-demo.bat` (`--use-fake-ui-for-media-stream`, `--autoplay-policy`).
 18. Microsoft Research, "Smartphone-Based Gaze Gesture Communication for People with Motor Disabilities" (GazeSpeak). https://www.microsoft.com/en-us/research/publication/smartphone-based-gaze-gesture-communication-people-motor-disabilities-2/ — design influence: coarse gaze zones and gaze gestures rather than fine pointing.
-19. Anthropic, *Claude* (Claude Opus 5.5 and Claude Fable 5.1, via Claude Code). https://claude.ai — generative-AI assistance for the source code and tests, as disclosed above.
+19. Anthropic, *Claude* (Claude Opus 5.5 and Claude Fable 5.1, via Claude Code). https://claude.ai — generative-AI assistance (also Claude Fable 5.2) for the source code and tests, as disclosed above.
+20. **(code)** OpenJS Foundation, *Electron* v45 (MIT). https://www.electronjs.org — desktop app shell (`electron/`). Hardening follows "Security" in the Electron docs: https://www.electronjs.org/docs/latest/tutorial/security
+21. **(code)** *electron-builder* v26 (MIT). https://www.electron.build — builds the Windows installer (`npm run dist`); configuration in `package.json`.
+22. **(code)** Evan Wallace, *esbuild* (MIT). https://esbuild.github.io — bundles the Electron main and preload scripts (`scripts/build-electron.mjs`).
+23. OWASP, "Cross-Site Request Forgery Prevention Cheat Sheet." https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html — checks on the dev-server API (`isLocalRequest` in `electron/security.ts`).
 
 Icons in `src/ui/icons.ts` are original drawings. The placeholder persona in `src/profile/profile.ts` is
 fictional.

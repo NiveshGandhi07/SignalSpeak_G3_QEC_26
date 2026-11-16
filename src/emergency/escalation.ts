@@ -73,14 +73,20 @@ export type CallOutcome = "pending" | "answered" | "unanswered";
  * Interpret Twilio call status + answering-machine detection.
  * Statuses: https://www.twilio.com/docs/voice/api/call-resource#call-status-values
  * Voicemail (AnsweredBy = machine_* / fax) does NOT count as the caregiver answering.
+ *
+ * Without detection (Twilio trial accounts can't enable it), a connected call can't be told apart
+ * from voicemail picking up, so it never counts as answered: only the caregiver tapping
+ * "I'm on my way" (ntfy) stops the 911 countdown. A call that ends unconfirmed counts as unanswered,
+ * so voicemail escalates as soon as the minimum wait has passed.
  */
 export function classifyCall(status: string, answeredBy?: string | null, detection = true): CallOutcome {
   const machine = !!answeredBy && (answeredBy.startsWith("machine") || answeredBy === "fax");
   if (["busy", "failed", "no-answer", "canceled"].includes(status)) return "unanswered";
   if (status === "in-progress" || status === "completed") {
     if (machine) return "unanswered";
+    if (!detection) return status === "completed" ? "unanswered" : "pending"; // human or voicemail? unknown
     // with detection enabled, wait for Twilio to decide human vs machine
-    if (detection && status === "in-progress" && !answeredBy) return "pending";
+    if (status === "in-progress" && !answeredBy) return "pending";
     return "answered";
   }
   return "pending"; // queued / initiated / ringing

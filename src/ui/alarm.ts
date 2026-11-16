@@ -7,7 +7,7 @@
 // AI-assisted: written with help from Claude (Anthropic).
 import { speak, stopSpeaking } from "../tts/speak";
 import { classifyCall, idle, secondsLeft, step, type Effect, type EscEvent, type EscState } from "../emergency/escalation";
-import { attempt, callStatus, endCall, listenForAck, placeCall, sendPush, sendText } from "../emergency/notify";
+import { attempt, callStatus, endCall, listenForAck, newAckNonce, placeCall, sendPush, sendText } from "../emergency/notify";
 import { icon } from "./icons";
 
 const CALL_SCRIPT =
@@ -30,6 +30,8 @@ export class Alarm {
   private unlistenAck: () => void = () => {};
   private esc: EscState = idle();
   private callSid: string | null = null;
+  /** one-time code for this alarm: only an "I'm on my way" tap carrying it counts */
+  private ackNonce = "";
   private channels = new Map<Channel, string>();
   /** bumped on every start/stop so late async results from an old alarm are ignored */
   private session = 0;
@@ -68,8 +70,9 @@ export class Alarm {
     this.call911El.hidden = true;
     this.channels.clear();
     this.renderChannels();
+    this.ackNonce = newAckNonce();
     this.dispatch({ type: "start", now: performance.now() });
-    this.unlistenAck = listenForAck(() => this.dispatch({ type: "ack" }));
+    this.unlistenAck = listenForAck(this.ackNonce, () => this.dispatch({ type: "ack" }));
     const tick = () => {
       this.beep();
       if (this.esc.phase === "waiting") speak("Emergency! I need help now!", 1.05);
@@ -105,7 +108,7 @@ export class Alarm {
             title: "EMERGENCY",
             message: `Patient needs help NOW (${time}). Tap "I'm on my way" or 911 will be called.`,
             urgent: true,
-            askAck: true,
+            ackNonce: this.ackNonce,
           }),
         ));
         break;

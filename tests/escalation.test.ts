@@ -78,8 +78,22 @@ describe("classifyCall", () => {
     expect(classifyCall(status, answeredBy)).toBe(expected);
   });
 
-  it("without voicemail detection (trial), picking up counts as answered immediately", () => {
-    expect(classifyCall("in-progress", null, false)).toBe("answered");
+  it("without voicemail detection (trial), a connected call is never treated as answered", () => {
+    // voicemail picking up looks identical to a person answering, so only the ntfy ack counts
+    expect(classifyCall("in-progress", null, false)).toBe("pending");
     expect(classifyCall("ringing", null, false)).toBe("pending");
+  });
+
+  it("without detection, a call that ends unconfirmed (e.g. voicemail) counts as unanswered", () => {
+    expect(classifyCall("completed", null, false)).toBe("unanswered");
+    expect(classifyCall("no-answer", null, false)).toBe("unanswered");
+  });
+
+  it("voicemail on a trial call: countdown keeps running and escalates", () => {
+    // simulate: call connects to voicemail at 8 s (pending), voicemail hangs up at 25 s (unanswered)
+    let s = step(idle(), { type: "start", now: 0 }).state;
+    expect(classifyCall("in-progress", null, false)).toBe("pending"); // no callAnswered dispatched
+    s = step(s, { type: "callUnanswered" }).state; // at 25 s, call completed
+    expect(step(s, { type: "tick", now: 25_000 }).effects).toEqual(["sendText", "call911"]);
   });
 });

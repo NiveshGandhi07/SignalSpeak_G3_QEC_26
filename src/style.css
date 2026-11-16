@@ -435,3 +435,11 @@ body.calibrating #fatigue { opacity: 0; }
   z-index: 5;
   pointer-events: none;
 }
+
+/* About me: "My controls" (live settings) */
+.section.controls dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; margin: 4px 0 0; font-size: 0.78rem; }
+.section.controls dt { font-weight: 600; }
+.section.controls dd { margin: 0; opacity: 0.85; }
+
+/* a choice that can't be made right now (e.g. gesture already used by the other bind) */
+.tile.disabled { opacity: 0.35; filter: grayscale(1); }

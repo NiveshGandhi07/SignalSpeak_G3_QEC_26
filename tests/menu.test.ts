@@ -59,15 +59,51 @@ describe("menu", () => {
     expect(selectItem(temp, "cold").action).toMatchObject({ kind: "speak", text: "I am too cold" });
   });
 
-  it("binds lists the emergency gestures with the current one checked", () => {
+  it("binds has one screen per bind, each showing the current gesture", () => {
     const nav = selectItem(initialNav(), "binds").nav;
+    expect(ids(nav)).toEqual([BACK_ID, "binds-emergency", "binds-calibrate", "binds-painCheck"]);
+    expect(visibleItems(nav).find((i) => i.id === "binds-emergency")?.sub).toBe("Two long blinks");
+    expect(visibleItems(nav).find((i) => i.id === "binds-calibrate")?.sub).toBe("Two 3-second closes");
+  });
+
+  it("emergency bind screen lists the gestures with the current one checked", () => {
+    let nav = selectItem(initialNav(), "binds").nav;
+    nav = selectItem(nav, "binds-emergency").nav;
     expect(ids(nav)).toEqual([BACK_ID, "bind-twoLongBlinks", "bind-closedBrowRaises", "bind-twoLongCloses"]);
     const items = visibleItems(nav);
     expect(items.find((i) => i.id === "bind-twoLongBlinks")?.checked).toBe(true);
     expect(items.find((i) => i.id === "bind-closedBrowRaises")?.checked).toBe(false);
+    const taken = items.find((i) => i.id === "bind-twoLongCloses")!;
+    expect(taken.sub).toBe("In use for Recalibrate");
+    expect(taken.disabled).toBe(true);
+    expect(selectItem(nav, "bind-twoLongCloses")).toEqual({ nav, action: null }); // can't be picked
     expect(selectItem(nav, "bind-closedBrowRaises").action).toEqual({ kind: "setBind", key: "emergency", value: "closedBrowRaises" });
-    const after = buildMenus(["youtube"], { emergency: "closedBrowRaises" });
+    const after = buildMenus(["youtube"], { emergency: "closedBrowRaises", calibrate: "twoLongCloses", painCheck: true });
     expect(visibleItems(nav, after).find((i) => i.id === "bind-closedBrowRaises")?.checked).toBe(true);
+  });
+
+  it("recalibrate bind screen offers the gestures plus Off, and flags the emergency one", () => {
+    let nav = selectItem(initialNav(), "binds").nav;
+    nav = selectItem(nav, "binds-calibrate").nav;
+    expect(ids(nav)).toEqual([BACK_ID, "calbind-twoLongBlinks", "calbind-closedBrowRaises", "calbind-twoLongCloses", "calbind-off"]);
+    const items = visibleItems(nav);
+    expect(items.find((i) => i.id === "calbind-twoLongCloses")?.checked).toBe(true);
+    expect(items.find((i) => i.id === "calbind-twoLongBlinks")?.sub).toBe("In use for Emergency");
+    expect(items.find((i) => i.id === "calbind-twoLongBlinks")?.disabled).toBe(true);
+    expect(selectItem(nav, "calbind-twoLongBlinks").action).toBeNull();
+    expect(selectItem(nav, "calbind-closedBrowRaises").action).toEqual({ kind: "setBind", key: "calibrate", value: "closedBrowRaises" });
+    expect(selectItem(nav, "calbind-off").action).toEqual({ kind: "setBind", key: "calibrate", value: "off" });
+  });
+
+  it("pain check: toggle under Binds; prompt screen offers Yes (pain scale) or No (home)", () => {
+    const binds = selectItem(initialNav(), "binds").nav;
+    expect(selectItem(binds, "binds-painCheck").action).toEqual({ kind: "togglePainCheck" });
+    const check = { stack: ["home", "painCheck"] };
+    expect(ids(check)).toEqual([BACK_ID, "painCheck-yes", "painCheck-no"]);
+    expect(currentMenu(selectItem(check, "painCheck-yes").nav).id).toBe("pain");
+    const no = selectItem(check, "painCheck-no");
+    expect(no.action).toEqual({ kind: "home" });
+    expect(no.nav.stack).toEqual(["home"]);
   });
 
   it("unknown ids don't change state", () => {

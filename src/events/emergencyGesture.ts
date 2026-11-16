@@ -1,5 +1,6 @@
-// Emergency gesture "binds": the user (or caregiver) picks which gesture raises the alarm from any
-// screen. All detectors are pure state machines; this file wraps them behind one small interface.
+// Gesture "binds": the user (or caregiver) picks which gesture raises the alarm from any screen, and
+// (optionally) a different gesture that restarts calibration from any screen. All detectors are pure
+// state machines; this file wraps them behind one small interface.
 //   twoLongBlinks    — eyes closed 1–3 s, open, again within 5 s            (default)
 //   twoLongCloses    — eyes closed ≥3 s, open, again within 5 s
 //   closedBrowRaises — eyes closed, then raise the eyebrows 3 times (needs a calibrated brow raise)
@@ -22,15 +23,49 @@ export const EMERGENCY_BINDS: BindOption[] = [
   { id: "twoLongCloses", label: "Two 3-second closes", sub: "Close eyes 3 s, open, repeat within 5 s", needsBrow: false },
 ];
 
+/** Recalibrate from any screen: one of the same gestures, or off. */
+export type CalibrateBind = EmergencyBind | "off";
+
 export interface Binds {
   emergency: EmergencyBind;
+  calibrate: CalibrateBind;
+  /** ask "Are you in pain?" when a sustained grimace is seen (events/grimace.ts) */
+  painCheck: boolean;
 }
 
-export const DEFAULT_BINDS: Binds = { emergency: "twoLongBlinks" };
+/** The two binds that hold a gesture. They are exclusive: one gesture never does both jobs. */
+export type GestureBindKey = "emergency" | "calibrate";
 
+// Default recalibrate gesture: two 3-second closes — clearly different from the default emergency
+// gesture (1–3 s closures), and closures longer than 8 s (resting / dozing) never count.
+export const DEFAULT_BINDS: Binds = { emergency: "twoLongBlinks", calibrate: "twoLongCloses", painCheck: true };
+
+const isGesture = (v: unknown): v is EmergencyBind => EMERGENCY_BINDS.some((b) => b.id === v);
+
+/** Sanitise stored binds. If stored data has both binds on one gesture, Emergency keeps it. */
 export function parseBinds(raw: unknown): Binds {
-  const e = (raw as Partial<Binds> | null)?.emergency;
-  return { emergency: EMERGENCY_BINDS.some((b) => b.id === e) ? (e as EmergencyBind) : DEFAULT_BINDS.emergency };
+  const r = (raw ?? {}) as Partial<Binds>;
+  const e: unknown = r.emergency, c: unknown = r.calibrate;
+  const emergency = isGesture(e) ? e : DEFAULT_BINDS.emergency;
+  let calibrate: CalibrateBind = c === "off" || isGesture(c) ? c : DEFAULT_BINDS.calibrate;
+  if (calibrate === emergency) calibrate = "off";
+  const painCheck = typeof r.painCheck === "boolean" ? r.painCheck : DEFAULT_BINDS.painCheck;
+  return { emergency, calibrate, painCheck };
+}
+
+/** The gesture the other bind holds — this bind may not pick it. */
+export function takenBy(binds: Binds, key: GestureBindKey): CalibrateBind {
+  return key === "emergency" ? binds.calibrate : binds.emergency;
+}
+
+/**
+ * Change one gesture bind (pure). A gesture already used by the other bind is refused — the same
+ * object comes back, so the caller can tell nothing changed. Emergency can never be turned off.
+ */
+export function applyBind(binds: Binds, key: GestureBindKey, value: CalibrateBind): Binds {
+  if (value !== "off" && value === takenBy(binds, key)) return binds;
+  if (key === "emergency") return value === "off" ? binds : { ...binds, emergency: value };
+  return { ...binds, calibrate: value };
 }
 
 export const TWO_LONG_CLOSES: LongBlinkOptions = { ...DEFAULT_LONG_BLINK, minMs: 3000, maxMs: 8000, gapMs: 5000, count: 2 };
@@ -79,7 +114,7 @@ export function stepClosedRaises(
   return { state: s, event: "none", count: s.raises };
 }
 
-// ---------- unified detector ----------
+// ---------- unified detector (used for both the emergency and the recalibrate bind) ----------
 export interface EmergencyDetector {
   readonly bind: EmergencyBind;
   readonly needed: number;

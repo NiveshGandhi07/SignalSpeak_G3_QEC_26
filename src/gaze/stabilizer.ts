@@ -15,7 +15,7 @@ export const DEFAULT_STABILIZER: StabilizerOptions = { window: 5, minCutoff: 0.4
 
 export class Stabilizer {
   private hx: number[] = [];
-  private hy: number[] = [];
+  private hy: number[] = []; 
   private fx: OneEuroFilter;
   private fy: OneEuroFilter;
   private out: [number, number] | null = null;

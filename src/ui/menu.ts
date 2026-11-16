@@ -2,7 +2,7 @@
 // AI-assisted: written with help from Claude (Anthropic).
 import { CATALOG, DEFAULT_MACROS, findMacro } from "../macros/catalog";
 import { introText, PROFILE } from "../profile/profile";
-import { DEFAULT_BINDS, EMERGENCY_BINDS, type Binds, type EmergencyBind } from "../events/emergencyGesture";
+import { DEFAULT_BINDS, EMERGENCY_BINDS, takenBy, type Binds, type CalibrateBind, type EmergencyBind, type GestureBindKey } from "../events/emergencyGesture";
 
 export type Action =
   | {
@@ -17,7 +17,11 @@ export type Action =
   | { kind: "emergency" }
   | { kind: "openMacro"; macroId: string }
   | { kind: "toggleMacro"; macroId: string }
-  | { kind: "setBind"; key: "emergency"; value: EmergencyBind };
+  | { kind: "setBind"; key: "emergency"; value: EmergencyBind }
+  | { kind: "setBind"; key: "calibrate"; value: CalibrateBind }
+  | { kind: "togglePainCheck" }
+  /** back to the home screen (e.g. "No, I'm OK" on the pain check) */
+  | { kind: "home" };
 
 export type Tone = "danger" | "yes" | "no" | "nav" | "pain";
 
@@ -30,6 +34,8 @@ export interface MenuItem {
   tone?: Tone;
   /** shows a ✓ (e.g. macro is enabled) */
   checked?: boolean;
+  /** shown greyed out and can't be selected (e.g. a gesture the other bind already uses) */
+  disabled?: boolean;
   /** open this sub-menu */
   submenu?: string;
   /** or perform this action */
@@ -95,6 +101,17 @@ const STATIC_MENUS: Record<string, Menu> = {
       { id: "cold", label: "Too cold", icon: "snowflake", action: { kind: "speak", text: "I am too cold", goHome: true, notify: "plain" } },
     ],
   },
+  // Shown automatically when a sustained grimace is seen (events/grimace.ts). Yes leads to the pain
+  // scale, which tells the caregiver how bad it is; No goes home.
+  painCheck: {
+    id: "painCheck",
+    title: "Are you in pain?",
+    columns: 3,
+    items: [
+      { id: "painCheck-yes", label: "Yes, I'm in pain", sub: "Choose how bad", icon: "pulse", tone: "danger", submenu: "pain" },
+      { id: "painCheck-no", label: "No, I'm OK", icon: "check", tone: "yes", action: { kind: "home" } },
+    ],
+  },
   about: {
     id: "about",
     title: "About me",
@@ -104,20 +121,58 @@ const STATIC_MENUS: Record<string, Menu> = {
   },
 };
 
-/** "Binds": which gesture raises the emergency alarm from any screen (radio-style choice). */
+const gestureLabel = (id: CalibrateBind) => (id === "off" ? "Off" : EMERGENCY_BINDS.find((b) => b.id === id)!.label);
+
+/** "Binds": which gesture does what from any screen, plus the automatic pain check. */
 export function bindsMenu(binds: Binds): Menu {
   return {
     id: "binds",
-    title: "Binds · Emergency gesture",
+    title: "Binds",
+    columns: 3,
+    items: [
+      { id: "binds-emergency", label: "Emergency gesture", sub: gestureLabel(binds.emergency), icon: "alert", tone: "danger", submenu: "bindsEmergency" },
+      { id: "binds-calibrate", label: "Recalibrate gesture", sub: gestureLabel(binds.calibrate), icon: "target", tone: "nav", submenu: "bindsCalibrate" },
+      {
+        id: "binds-painCheck",
+        label: "Pain check",
+        sub: binds.painCheck ? "Asks if I look in pain" : "Off",
+        icon: "pulse",
+        checked: binds.painCheck,
+        action: { kind: "togglePainCheck" },
+      },
+    ],
+  };
+}
+
+/** Gesture tiles for one bind (radio-style). The gesture the other bind uses is shown but can't be picked. */
+function gestureItems(binds: Binds, key: GestureBindKey, prefix: string): MenuItem[] {
+  const taken = takenBy(binds, key);
+  const other = key === "emergency" ? "Recalibrate" : "Emergency";
+  return EMERGENCY_BINDS.map((b) => ({
+    id: `${prefix}-${b.id}`,
+    label: b.label,
+    sub: b.id === taken ? `In use for ${other}` : b.sub,
+    icon: key === "emergency" ? "alert" : "target",
+    checked: binds[key] === b.id,
+    disabled: b.id === taken,
+    action: { kind: "setBind" as const, key, value: b.id } as Action,
+  }));
+}
+
+export function emergencyBindMenu(binds: Binds): Menu {
+  return { id: "bindsEmergency", title: "Emergency gesture", columns: 4, items: gestureItems(binds, "emergency", "bind") };
+}
+
+/** Recalibrate gesture: one of the gestures Emergency isn't using, or Off. */
+export function calibrateBindMenu(binds: Binds): Menu {
+  return {
+    id: "bindsCalibrate",
+    title: "Recalibrate gesture",
     columns: 4,
-    items: EMERGENCY_BINDS.map((b) => ({
-      id: `bind-${b.id}`,
-      label: b.label,
-      sub: b.sub,
-      icon: "alert",
-      checked: binds.emergency === b.id,
-      action: { kind: "setBind" as const, key: "emergency" as const, value: b.id },
-    })),
+    items: [
+      ...gestureItems(binds, "calibrate", "calbind"),
+      { id: "calbind-off", label: "Off", sub: "Use the Calibrate tile only", icon: "x", checked: binds.calibrate === "off", action: { kind: "setBind", key: "calibrate", value: "off" } },
+    ],
   };
 }
 
@@ -148,7 +203,14 @@ export function macroEditMenu(enabled: string[]): Menu {
 }
 
 export function buildMenus(enabledMacros: string[], binds: Binds = DEFAULT_BINDS): Record<string, Menu> {
-  return { ...STATIC_MENUS, macros: macrosMenu(enabledMacros), macroEdit: macroEditMenu(enabledMacros), binds: bindsMenu(binds) };
+  return {
+    ...STATIC_MENUS,
+    macros: macrosMenu(enabledMacros),
+    macroEdit: macroEditMenu(enabledMacros),
+    binds: bindsMenu(binds),
+    bindsEmergency: emergencyBindMenu(binds),
+    bindsCalibrate: calibrateBindMenu(binds),
+  };
 }
 
 export const MENUS: Record<string, Menu> = buildMenus(DEFAULT_MACROS, DEFAULT_BINDS);
@@ -182,9 +244,9 @@ export function selectItem(s: NavState, itemId: string, menus = MENUS): { nav: N
     return { nav: { stack: s.stack.length > 1 ? s.stack.slice(0, -1) : s.stack }, action: null };
   }
   const item = visibleItems(s, menus).find((i) => i.id === itemId);
-  if (!item) return { nav: s, action: null };
+  if (!item || item.disabled) return { nav: s, action: null };
   if (item.submenu) return { nav: { stack: [...s.stack, item.submenu] }, action: null };
   const action = item.action ?? null;
-  const goHome = action?.kind === "speak" && action.goHome;
+  const goHome = (action?.kind === "speak" && action.goHome) || action?.kind === "home";
   return { nav: goHome ? initialNav() : s, action };
 }

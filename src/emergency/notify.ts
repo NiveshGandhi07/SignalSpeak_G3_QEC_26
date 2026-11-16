@@ -1,100 +1,104 @@
-// Caregiver notifications.
-//  1) Push notification via ntfy.sh (free, open-source, no account/API key) — https://ntfy.sh, https://docs.ntfy.sh
-//     The caregiver installs the ntfy app and subscribes to VITE_NTFY_TOPIC. The notification carries an
-//     "I'm on my way" button that POSTs to `<topic>-ack`; the app listens on that topic (Server-Sent Events).
-//  2) Phone call + SMS via our own /api endpoints (vite.config.ts), which relay to Twilio using
-//     credentials that stay on the local server (never shipped to the browser or committed).
+// Caregiver notifications, as seen from the interface.
+// The interface holds no credentials and makes no internet requests itself. It asks the trusted backend
+// (electron/backend.ts) for one of the operations in ./api.ts:
+//   - desktop app: through `window.signalspeak` (electron/preload.ts -> IPC -> main process)
+//   - `npm run dev` in a browser: through POST /api/backend on the local dev server (vite.config.ts)
+// Channels: push notification via ntfy (free, open-source — https://ntfy.sh) with an "I'm on my way"
+// button; phone call + text via Twilio.
 // AI-assisted: written with help from Claude (Anthropic).
+import type { BackendApi, BackendMethod, PlacedCall, PushRequest } from "./api";
 
-const NTFY = "https://ntfy.sh";
-const TOPIC: string | undefined = import.meta.env.VITE_NTFY_TOPIC;
+export type { PlacedCall } from "./api";
+export type Alert = PushRequest;
 
-export interface Alert {
-  title: string;
-  message: string;
-  /** emergency look: highest priority + siren tag. Otherwise `priority` (default 3 = normal). */
-  urgent?: boolean;
-  priority?: 1 | 2 | 3 | 4 | 5;
-  tags?: string[];
-  /** include the "I'm on my way" acknowledge button */
-  askAck?: boolean;
+declare global {
+  interface Window {
+    /** present only inside the desktop app */
+    signalspeak?: BackendApi;
+  }
 }
+
+async function http<T>(method: BackendMethod, payload: object): Promise<T> {
+  const res = await fetch("/api/backend", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method, payload }),
+  });
+  const data = await res.json().catch(() => ({ error: res.statusText }));
+  if (!res.ok) throw new Error(data.error ?? String(res.status));
+  return data.result as T;
+}
+
+const devServer: BackendApi = {
+  push: (a) => http("push", a),
+  call: (script) => http("call", { script }),
+  callStatus: (sid) => http("callStatus", { sid }),
+  endCall: (sid) => http("endCall", { sid }),
+  sms: (body) => http("sms", { body }),
+  checkAck: (nonce, sinceUnix) => http("checkAck", { nonce, sinceUnix }),
+  openMacro: (macroId) => http("openMacro", { macroId }),
+};
+
+export const backend: BackendApi = (typeof window !== "undefined" && window.signalspeak) || devServer;
+
+/** Electron prefixes errors that cross the process boundary; show only the message itself. */
+const tidy = (e: unknown) => String((e as Error)?.message ?? e).replace(/^Error invoking remote method '[^']*': (Error: )?/, "");
 
 /** Run a channel and turn the result into a short status line (never throws). */
 export async function attempt(fn: () => Promise<string>): Promise<string> {
   try {
     return await fn();
   } catch (e) {
-    return `Failed: ${(e as Error).message}`;
+    return `Failed: ${tidy(e)}`;
   }
 }
 
+/** One-time code tying an "I'm on my way" tap to one specific alert. */
+export const newAckNonce = (): string => crypto.randomUUID();
+
 export async function sendPush(a: Alert): Promise<string> {
-  if (!TOPIC) throw new Error("push not configured (VITE_NTFY_TOPIC)");
-  const res = await fetch(NTFY, {
-    method: "POST",
-    body: JSON.stringify({
-      topic: TOPIC,
-      title: a.title,
-      message: a.message,
-      priority: a.urgent ? 5 : (a.priority ?? 3),
-      tags: a.tags ?? (a.urgent ? ["rotating_light"] : ["information_source"]),
-      actions: a.askAck
-        ? [{ action: "http", label: "I'm on my way", url: `${NTFY}/${TOPIC}-ack`, method: "POST", body: "ack", clear: true }]
-        : [],
-    }),
-  });
-  if (!res.ok) throw new Error(`push failed (${res.status})`);
+  await backend.push(a);
   return "Push sent";
 }
 
-async function api<T>(path: string, body?: object): Promise<T> {
-  const res = await fetch(path, {
-    method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({ error: res.statusText }));
-  if (!res.ok) throw new Error(data.error ?? String(res.status));
-  return data as T;
-}
-
 export async function sendText(body: string): Promise<string> {
-  await api("/api/sms", { body }).catch((e) => Promise.reject(new Error(`SMS: ${e.message}`)));
+  await backend.sms(body).catch((e) => Promise.reject(new Error(`SMS: ${tidy(e)}`)));
   return "Text sent";
-}
-
-export interface PlacedCall {
-  sid: string;
-  /** answering-machine detection is on (false on Twilio trial accounts) */
-  detection: boolean;
-  /** trial account: Twilio's sample message plays instead of our script */
-  trial: boolean;
 }
 
 /** Starts a phone call that reads `script` aloud (or Twilio's sample message on a trial account). */
 export function placeCall(script: string): Promise<PlacedCall> {
-  return api<PlacedCall>("/api/call", { script }).catch((e) => Promise.reject(new Error(`call: ${e.message}`)));
+  return backend.call(script).catch((e) => Promise.reject(new Error(tidy(e))));
 }
 
-export function callStatus(sid: string): Promise<{ status: string; answeredBy: string | null }> {
-  return api(`/api/call?sid=${encodeURIComponent(sid)}`);
-}
+export const callStatus = (sid: string) => backend.callStatus(sid);
 
 export function endCall(sid: string): Promise<unknown> {
-  return api("/api/call/end", { sid }).catch(() => undefined);
+  return backend.endCall(sid).catch(() => undefined);
 }
 
-/** Listen for the caregiver tapping "I'm on my way". Returns an unsubscribe function. */
-export function listenForAck(onAck: () => void): () => void {
-  if (!TOPIC || typeof EventSource === "undefined") return () => {};
-  const es = new EventSource(`${NTFY}/${TOPIC}-ack/sse`);
-  es.onmessage = (ev) => {
-    try {
-      if (JSON.parse(ev.data).event === "message") onAck();
-    } catch {
-      /* ignore keepalives / malformed */
-    }
+const ACK_POLL_MS = 3000;
+
+/**
+ * Wait for the caregiver to tap "I'm on my way" on the alert sent with `nonce`.
+ * Returns a function that stops waiting. Network hiccups are ignored — the next poll tries again.
+ */
+export function listenForAck(nonce: string, onAck: () => void): () => void {
+  const since = Math.floor(Date.now() / 1000) - 5; // small allowance for clock differences
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    clearInterval(timer);
   };
-  return () => es.close();
+  const timer = setInterval(() => {
+    backend
+      .checkAck(nonce, since)
+      .then((acked) => {
+        if (!acked || stopped) return;
+        stop();
+        onAck();
+      })
+      .catch(() => {});
+  }, ACK_POLL_MS);
+  return stop;
 }

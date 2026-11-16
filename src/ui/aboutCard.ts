@@ -7,7 +7,8 @@ const esc = (s: string) =>
 
 const pips = (n: number) => "●".repeat(n) + "○".repeat(Math.max(0, 5 - n));
 
-export function renderAboutCard(p: Profile): HTMLElement {
+/** `controls` = this user's current settings (ui/help.ts controlLines), shown as "My controls". */
+export function renderAboutCard(p: Profile, controls: { name: string; detail: string }[] = []): HTMLElement {
   const card = document.createElement("div");
   card.className = "aboutCard";
   const avatar = /^[/.]|^https?:/.test(p.avatar)
@@ -37,6 +38,13 @@ export function renderAboutCard(p: Profile): HTMLElement {
           <div class="section"><b>Talk to me</b><ul>${p.tips.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>
           <div class="section"><b>Likes</b> ${p.likes.map(esc).join(" · ")}</div>
           <div class="section medical"><b>Medical</b> ${p.medical.map(esc).join(" · ")}</div>
+          ${
+            controls.length
+              ? `<div class="section controls"><b>My controls</b><dl>${controls
+                  .map((c) => `<dt>${esc(c.name)}</dt><dd>${esc(c.detail)}</dd>`)
+                  .join("")}</dl></div>`
+              : ""
+          }
         </div>
       </div>
     </div>`;

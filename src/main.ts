@@ -7,20 +7,28 @@
 // Select: look at a tile, then raise the eyebrows. If the brow raise is too weak to detect reliably,
 // the app falls back to dwell (look at a tile and hold) — the interface adapts to the user.
 // Emergency from any screen: a gesture the user picks under Binds (default: two long blinks within 5 s).
+// Recalibrate from any screen: a second, different gesture picked under Binds (default: two 3-second
+// closes). It runs a 3-dot touch-up (~6 s); if the dots show the error isn't a simple shift, the full
+// calibration runs instead. Between calibrations, drift is corrected silently from the user's own
+// selections (gaze/drift.ts).
+// Pain check: a sustained grimace opens "Are you in pain?" (events/grimace.ts).
 // Fatigue-aware pacing: timings, brow sensitivity and selection method adapt as the user tires.
 // AI-assisted: written with help from Claude (Anthropic).
 import "./style.css";
 import type { FaceLandmarker } from "@mediapipe/tasks-vision";
 import { createLandmarker, startCamera } from "./vision/landmarker";
 import { FaceOverlay } from "./vision/overlay";
-import { blinkScore, headPose, rawGaze } from "./gaze/features";
-import { fitCalibration, predictScreen, type CalSample, type Calibration } from "./gaze/calibration";
+import { blinkScore, headPose, rawGaze, type Blendshape } from "./gaze/features";
+import { fitCalibration, predictScreen, type CalSample } from "./gaze/calibration";
 import { Stabilizer } from "./gaze/stabilizer";
+import { parseSavedCalibration, type SavedCalibration } from "./gaze/storage";
 import { Board } from "./ui/board";
 import { browScore, calibrateBrow, initialBrow, scaleBrow, stepBrow, type BrowParams } from "./events/brow";
-import { createEmergencyDetector, EMERGENCY_BINDS, type EmergencyDetector } from "./events/emergencyGesture";
+import { createEmergencyDetector, EMERGENCY_BINDS, type Binds, type EmergencyDetector, type GestureBindKey } from "./events/emergencyGesture";
 import { FatigueTracker, type Pacing } from "./adapt/fatigue";
 import { chirp } from "./ui/sound";
+import { applyOffset, initialDrift, recordSelection, touchUpOffset, type DriftState, type Vec } from "./gaze/drift";
+import { grimaceScore, initialGrimace, stepGrimace } from "./events/grimace";
 import { isLookingAway } from "./ui/pendingSpeech";
 
 // ---------- tunables ----------
@@ -36,6 +44,7 @@ const BLINK_REJECT = 0.45; // drop frames where eyes are mostly closed
 const TILE_STICKY_PX = 60; // once on a tile, stay on it until the cursor is this far outside it
 const LOOK_AWAY_MS = 400; // looking off-screen this long cancels a pending phrase
 const STORAGE_KEY = "signalspeak.gazeCalibration.v3";
+const TOUCH_UP_POINTS: Vec[] = [[0.5, 0.5], [0.15, 0.2], [0.85, 0.8]]; // fractions of the screen
 
 // ---------- DOM ----------
 const app = document.querySelector<HTMLDivElement>("#app")!;
@@ -67,13 +76,9 @@ const board = new Board(document.querySelector<HTMLDivElement>("#board")!, {
   speakDelayMs: (quick) => (quick ? fatigue.pacing().quickSpeakDelayMs : fatigue.pacing().speakDelayMs),
   onUndo: () => fatigue.recordUndo(performance.now()),
   usesBrow: () => !!cal?.brow && !fatigue.pacing().preferDwell,
-  onBindsChange: () => {
-    rebuildEmergencyDetector();
-    const b = EMERGENCY_BINDS.find((x) => x.id === emergency.bind)!;
-    statusEl.textContent =
-      emergency.bind === board.currentBinds.emergency
-        ? `Emergency gesture: ${b.label} — ${b.sub}`
-        : `That gesture needs a calibrated eyebrow raise — using "${b.label}" instead`;
+  onBindsChange: (binds, key, changed) => {
+    rebuildGestureDetectors();
+    statusEl.textContent = bindsMessage(binds, key, changed);
   },
 });
 
@@ -81,24 +86,52 @@ const board = new Board(document.querySelector<HTMLDivElement>("#board")!, {
 type Mode =
   | { kind: "waitFace"; since: number | null }
   | { kind: "calibrate"; idx: number; start: number; samples: CalSample[]; browRest: number[]; browRaised: number[] }
+  /** quick 3-dot drift touch-up; preds[i] = model predictions (no offset) while looking at dot i */
+  | { kind: "touchUp"; idx: number; start: number; preds: Vec[][] }
   | { kind: "track" };
 
-/** Gaze model + this user's brow thresholds (null = brow raise not usable -> dwell mode). */
-type SavedCalibration = Calibration & { brow: BrowParams | null };
 
 let mode: Mode = { kind: "waitFace", since: null };
 let cal: SavedCalibration | null = loadCalibration();
 if (cal) mode = { kind: "track" };
 
 const stab = new Stabilizer();
+let drift: DriftState = initialDrift(cal?.offset);
+let grimace = initialGrimace();
 let hoverTile: HTMLElement | null = null;
 let hoverSince = 0;
 let rearmUntil = 0;
 let boardVersion = -1;
 let brow = initialBrow();
-let emergency: EmergencyDetector = createEmergencyDetector(board.currentBinds.emergency, cal?.brow ?? null);
-function rebuildEmergencyDetector(): void {
-  emergency = createEmergencyDetector(board.currentBinds.emergency, cal?.brow ?? null);
+let emergency: EmergencyDetector = createEmergencyDetector(board.currentBinds.emergency, null);
+let recalibrate: EmergencyDetector | null = null;
+rebuildGestureDetectors();
+/**
+ * (Re)build the emergency and recalibrate gesture detectors from the current binds + brow calibration.
+ * A brow-based bind falls back to two long blinks when the user has no usable brow raise, so the
+ * two binds can end up on the same effective gesture — then Emergency wins and recalibrate is off.
+ */
+function rebuildGestureDetectors(): void {
+  const { emergency: e, calibrate: c } = board.currentBinds;
+  emergency = createEmergencyDetector(e, cal?.brow ?? null);
+  recalibrate = c === "off" ? null : createEmergencyDetector(c, cal?.brow ?? null);
+  if (recalibrate?.bind === emergency.bind) recalibrate = null;
+}
+
+/** Status line after a bind change: what each gesture now does, and any fallback that applied. */
+function bindsMessage(binds: Binds, key: GestureBindKey | "painCheck", changed: boolean): string {
+  const label = (id: string) => EMERGENCY_BINDS.find((x) => x.id === id)!.label;
+  if (key === "painCheck") return binds.painCheck ? "Pain check on — I'll ask if you look in pain" : "Pain check off";
+  if (!changed) return `That gesture is already used for ${key === "emergency" ? "Recalibrate" : "Emergency"} — pick another one`;
+  if (key === "calibrate") {
+    if (binds.calibrate === "off") return "Recalibrate gesture off — use the Calibrate tile";
+    if (!recalibrate) return `"${label(binds.calibrate)}" needs a calibrated eyebrow raise — recalibrate gesture is off for now`;
+    return `Recalibrate gesture: ${label(recalibrate.bind)}`;
+  }
+  const b = EMERGENCY_BINDS.find((x) => x.id === emergency.bind)!;
+  return emergency.bind === binds.emergency
+    ? `Emergency gesture: ${b.label} — ${b.sub}`
+    : `That gesture needs a calibrated eyebrow raise — using "${b.label}" instead`;
 }
 // current eyebrow raise, for measuring how high raises go (fatigue)
 let raisePeak = 0, raising = false, raiseClicked = false;
@@ -119,7 +152,7 @@ const BROW_IDX = 10;
 function loadCalibration(): SavedCalibration | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as SavedCalibration) : null;
+    return raw ? parseSavedCalibration(JSON.parse(raw)) : null; // validated: stored data is untrusted
   } catch {
     return null;
   }
@@ -130,6 +163,15 @@ function saveCalibration(c: SavedCalibration): void {
   } catch {
     /* storage unavailable — calibration just won't persist */
   }
+}
+
+/** Quick touch-up (Recalibrate gesture). Without a calibration there is nothing to touch up. */
+function startTouchUp(now: number): void {
+  if (!cal) return startCalibration(now);
+  mode = { kind: "touchUp", idx: 0, start: now, preds: TOUCH_UP_POINTS.map(() => []) };
+  cursor.hidden = true;
+  board.setDimmed(true);
+  document.body.classList.add("calibrating");
 }
 
 function startCalibration(now: number): void {
@@ -174,7 +216,7 @@ function onFrame(lm: FaceLandmarker, now: number): void {
     `  fatigue ${fatigue.score().toFixed(2)} ${JSON.stringify(fatigue.components(), (_k, v) => (typeof v === "number" ? +v.toFixed(2) : v))}\n` +
     `gx ${g.gx.toFixed(3)} gy ${g.gy.toFixed(3)} lookV ${g.lookV.toFixed(2)}\n` +
     `head yaw ${deg(pose.yaw)}° pitch ${deg(pose.pitch)}°  pos ${g.t.map((v) => v.toFixed(0)).join(",")} cm\n` +
-    (cal ? `cal error ${cal.errorPx.toFixed(0)} px  k=(${cal.eye.kx}, ${cal.eye.ky})` : "");
+    (cal ? `drift offset ${drift.offset.map((v) => v.toFixed(0)).join(",")} px  cal error ${cal.errorPx.toFixed(0)} px  k=(${cal.eye.kx}, ${cal.eye.ky})` : "");
 
   switch (mode.kind) {
     case "waitFace": {
@@ -188,8 +230,11 @@ function onFrame(lm: FaceLandmarker, now: number): void {
     case "calibrate":
       stepCalibration(mode, g, blink, browVal, now);
       break;
+    case "touchUp":
+      stepTouchUp(mode, g, blink, now);
+      break;
     case "track":
-      stepTracking(g, blink, browVal, now);
+      stepTracking(g, blink, browVal, shapes, now);
       break;
   }
 }
@@ -234,6 +279,46 @@ function stepCalibration(
   }
 }
 
+function stepTouchUp(m: Extract<Mode, { kind: "touchUp" }>, g: ReturnType<typeof rawGaze>, blink: number, now: number): void {
+  const w = window.innerWidth, h = window.innerHeight;
+  const [fx, fy] = TOUCH_UP_POINTS[m.idx];
+  const t = now - m.start;
+  statusEl.textContent = `Quick touch-up — look at the dot  ·  ${m.idx + 1} of ${TOUCH_UP_POINTS.length}`;
+  calDot.hidden = false;
+  calDot.classList.remove("pulse", "brow");
+  calDot.style.transform = `translate(${fx * w}px, ${fy * h}px) scale(${1 - 0.6 * Math.min(t / CAL_POINT_MS, 1)})`;
+  if (t > CAL_SETTLE_MS && blink < BLINK_REJECT) m.preds[m.idx].push(predictScreen(cal!, g));
+  if (t < CAL_POINT_MS) return;
+  m.idx++;
+  m.start = now;
+  if (m.idx < TOUCH_UP_POINTS.length) return;
+
+  const offset = touchUpOffset(TOUCH_UP_POINTS.map(([x, y], i) => ({ target: [x * w, y * h] as Vec, preds: m.preds[i] })));
+  if (!offset) {
+    // not a simple shift (or too big) — the gaze model itself needs refitting
+    startCalibration(now);
+    statusEl.textContent = "Cursor is off in different ways across the screen — running full calibration";
+    return;
+  }
+  calDot.hidden = true;
+  document.body.classList.remove("calibrating");
+  board.setDimmed(false);
+  setDrift(initialDrift(offset));
+  stab.reset();
+  mode = { kind: "track" };
+  statusEl.textContent = `Touch-up done — cursor shifted ${Math.round(Math.hypot(offset[0], offset[1]))} px`;
+}
+
+/** Update the drift offset and keep it with the saved calibration. */
+function setDrift(d: DriftState): void {
+  const changed = d.offset !== drift.offset;
+  drift = d;
+  if (changed && cal) {
+    cal = { ...cal, offset: d.offset };
+    saveCalibration(cal);
+  }
+}
+
 function finishCalibration(m: Extract<Mode, { kind: "calibrate" }>): void {
   calDot.hidden = true;
   calDot.classList.remove("brow");
@@ -241,11 +326,12 @@ function finishCalibration(m: Extract<Mode, { kind: "calibrate" }>): void {
   board.setDimmed(false);
   board.goHome();
   try {
-    cal = { ...fitCalibration(m.samples), brow: calibrateBrow(m.browRest, m.browRaised) };
+    cal = { ...fitCalibration(m.samples), brow: calibrateBrow(m.browRest, m.browRaised), offset: [0, 0] };
     saveCalibration(cal);
+    drift = initialDrift();
     stab.reset();
     brow = initialBrow();
-    rebuildEmergencyDetector();
+    rebuildGestureDetectors();
     mode = { kind: "track" };
     statusEl.textContent =
       `Calibrated (avg error ${cal.errorPx.toFixed(0)} px). ` +
@@ -260,7 +346,7 @@ function finishCalibration(m: Extract<Mode, { kind: "calibrate" }>): void {
 
 let cursorX = 0, cursorY = 0;
 
-function stepTracking(g: ReturnType<typeof rawGaze>, blink: number, browVal: number, now: number): void {
+function stepTracking(g: ReturnType<typeof rawGaze>, blink: number, browVal: number, shapes: Blendshape[], now: number): void {
   if (!cal) return;
   const pace = fatigue.pacing();
 
@@ -272,7 +358,30 @@ function stepTracking(g: ReturnType<typeof rawGaze>, blink: number, browVal: num
     statusEl.textContent = `Emergency gesture ${em.count} of ${emergency.needed} — keep going`;
   } else if (!board.alarmActive && em.event === "trigger") {
     chirp([880, 880, 880]);
+    recalibrate?.reset();
     board.triggerEmergency();
+  }
+
+  // Recalibrate from any screen (second gesture under Binds). Lower-pitched chirps so the user can
+  // tell it apart from the emergency gesture with their eyes closed. Never while the alarm is on.
+  const rc = recalibrate && !board.alarmActive && em.event === "none" ? recalibrate.step(blink, browVal, now) : null;
+  if (rc?.event === "progress") {
+    chirp([440, 330]);
+    statusEl.textContent = `Recalibrate gesture ${rc.count} of ${recalibrate!.needed} — keep going`;
+  } else if (rc?.event === "trigger") {
+    chirp([440, 330, 440]);
+    emergency.reset();
+    recalibrate!.reset();
+    startTouchUp(now);
+    return;
+  }
+
+  // Pain check: a sustained grimace (relative to this user's own resting face) asks "Are you in pain?"
+  const gr = stepGrimace(grimace, grimaceScore(shapes), blink, now);
+  grimace = gr.state;
+  if (gr.prompt && board.currentBinds.painCheck && board.askAboutPain()) {
+    chirp([523, 659]);
+    statusEl.textContent = "You look uncomfortable — are you in pain?";
   }
 
   // Eyebrow-raise click. Thresholds relax as the user tires (smaller raise needed).
@@ -292,7 +401,7 @@ function stepTracking(g: ReturnType<typeof rawGaze>, blink: number, browVal: num
   // Freeze the cursor during blinks and brow raises: both move the eyelids and would make it jump
   // off the tile the user is trying to select.
   if (blink <= BLINK_REJECT && !(useBrow && browsUp)) {
-    const [rx, ry] = predictScreen(cal, g);
+    const [rx, ry] = applyOffset(drift, ...predictScreen(cal, g));
     const [sx, sy] = stab.push(rx, ry, now);
     cursorX = clamp(sx, 0, window.innerWidth);
     cursorY = clamp(sy, 0, window.innerHeight);
@@ -394,10 +503,27 @@ function updateSelection(x: number, y: number, now: number, click: boolean, brow
   cursor.classList.toggle("browMode", browOk && rule.dwellMs === null);
   ring.style.strokeDashoffset = String(RING_LEN * (1 - progress));
   if (tile && fire) {
-    if (rule.dwellMs === null) fatigue.recordSelection(now - startedAt, now); // normal tiles only
+    if (rule.dwellMs === null) {
+      // normal tiles only
+      fatigue.recordSelection(now - startedAt, now);
+      noteDrift(tile, x, y);
+    }
     rearmUntil = now + pace.rearmMs; // refractory period before the next selection
     hoverSince = now;
     board.activate(tile);
+  }
+}
+
+/** The user just selected `tile`, so they were looking at it: the miss is a drift measurement. */
+function noteDrift(tile: HTMLElement, x: number, y: number): void {
+  const r = tile.getBoundingClientRect();
+  const wasFlagged = drift.needsRecal;
+  setDrift(recordSelection(drift, [r.left + r.width / 2, r.top + r.height / 2], [x, y]));
+  if (drift.needsRecal && !wasFlagged) {
+    const b = EMERGENCY_BINDS.find((e) => e.id === board.currentBinds.calibrate);
+    statusEl.textContent = b
+      ? `The cursor has drifted a lot — ${b.sub.toLowerCase()} for a quick touch-up`
+      : "The cursor has drifted a lot — select Calibrate to fix it";
   }
 }
 

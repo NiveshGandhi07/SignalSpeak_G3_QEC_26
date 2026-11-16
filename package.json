@@ -1,21 +1,49 @@
 {
   "name": "signalspeak",
+  "productName": "SignalSpeak",
+  "description": "Hands-free communication by eye gaze and facial movement, for people living with ALS.",
+  "author": "SignalSpeak team (QEC 2026)",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "typecheck": "tsc && tsc -p tsconfig.electron.json",
+    "build:ui": "vite build",
+    "build:electron": "node scripts/build-electron.mjs",
+    "build": "npm run typecheck && npm run build:ui && npm run build:electron",
     "preview": "vite preview",
     "test": "vitest run",
-    "demo": "cmd /c start-demo.bat"
+    "demo": "cmd /c start-demo.bat",
+    "app": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win"
   },
   "devDependencies": {
+    "@mediapipe/tasks-vision": "^1.2.3",
+    "@types/node": "^26.6.6",
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
     "typescript": "~7.0.2",
     "vite": "^8.3.6",
     "vitest": "^5.1.0"
   },
-  "dependencies": {
-    "@mediapipe/tasks-vision": "^1.2.3"
+  "build": {
+    "appId": "ca.signalspeak.app",
+    "productName": "SignalSpeak",
+    "files": ["dist/**", "dist-electron/**", "package.json"],
+    "directories": { "output": "release", "buildResources": "build" },
+    "asar": true,
+    "win": { "target": ["nsis"], "icon": "build/icon.png" },
+    "nsis": { "oneClick": true, "perMachine": false, "createDesktopShortcut": true, "shortcutName": "SignalSpeak" },
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    }
   }
 }

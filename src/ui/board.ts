@@ -11,9 +11,9 @@ import { openMacro } from "../macros/open";
 import { PROFILE } from "../profile/profile";
 import { fractionLeft, isDue, remainingMs, type PendingSpeech } from "./pendingSpeech";
 import { icon } from "./icons";
-import { parseBinds, type Binds } from "../events/emergencyGesture";
-import { attempt, listenForAck, sendPush } from "../emergency/notify";
-import { Help } from "./help";
+import { applyBind, parseBinds, type Binds, type GestureBindKey } from "../events/emergencyGesture";
+import { attempt, listenForAck, newAckNonce, sendPush } from "../emergency/notify";
+import { controlLines, Help, type HelpContext } from "./help";
 
 export interface BoardCallbacks {
   onCalibrate: () => void;
@@ -22,8 +22,8 @@ export interface BoardCallbacks {
   speakDelayMs: (quick: boolean) => number;
   /** user cancelled a phrase — a signal of mistakes / fatigue */
   onUndo: () => void;
-  /** the user changed a bind (e.g. emergency gesture) */
-  onBindsChange: (binds: Binds) => void;
+  /** the user changed a bind (emergency or recalibrate gesture); changed=false means it was refused */
+  onBindsChange: (binds: Binds, key: GestureBindKey | "painCheck", changed: boolean) => void;
   /** current select method, for the Help card */
   usesBrow: () => boolean;
 }
@@ -68,7 +68,7 @@ export class Board {
     this.header = root.querySelector(".crumb")!;
     this.grid = root.querySelector(".grid")!;
     this.alarm = new Alarm(document.body);
-    this.help = new Help(document.body, () => ({ usesBrow: this.cb.usesBrow(), emergency: this.binds.emergency }));
+    this.help = new Help(document.body, () => this.settings());
 
     this.pendingEl = document.createElement("div");
     this.pendingEl.id = "pending";
@@ -88,12 +88,29 @@ export class Board {
     this.render();
   }
 
+  /** The user's current control settings (Help card + About me card). */
+  private settings(): HelpContext {
+    return { usesBrow: this.cb.usesBrow(), ...this.binds };
+  }
+
+  /**
+   * Pain check: show "Are you in pain?" — unless the user is busy (alarm, a phrase about to be spoken,
+   * Help open) or already on the pain screens. Returns whether it was shown.
+   */
+  askAboutPain(): boolean {
+    const here = currentMenu(this.nav, this.menus).id;
+    if (this.alarm.active || this.pending || this.help.open || here === "pain" || here === "painCheck") return false;
+    this.nav = { stack: ["home", "painCheck"] };
+    this.render();
+    return true;
+  }
+
   /** Elements the gaze cursor can currently select. While a phrase is pending, only Cancel. */
   targets(): HTMLElement[] {
     if (this.alarm.active) return [this.alarm.stopTile];
     if (this.pending) return [this.cancelTile];
     if (this.help.open) return [this.help.closeTile];
-    return [...this.tiles, this.help.button];
+    return [...this.tiles.filter((t) => !t.classList.contains("disabled")), this.help.button];
   }
 
   selectRule(el: HTMLElement): SelectRule {
@@ -174,13 +191,25 @@ export class Board {
         this.menus = buildMenus(this.enabledMacros, this.binds);
         this.render();
         break;
-      case "setBind":
-        this.binds = { ...this.binds, [a.key]: a.value };
+      case "home":
+        break; // navigation already handled by selectItem
+      case "togglePainCheck":
+        this.binds = { ...this.binds, painCheck: !this.binds.painCheck };
         saveBinds(this.binds);
         this.menus = buildMenus(this.enabledMacros, this.binds);
         this.render();
-        this.cb.onBindsChange(this.binds);
+        this.cb.onBindsChange(this.binds, "painCheck", true);
         break;
+      case "setBind": {
+        const next = applyBind(this.binds, a.key, a.value);
+        const changed = next !== this.binds;
+        this.binds = next;
+        saveBinds(this.binds);
+        this.menus = buildMenus(this.enabledMacros, this.binds);
+        this.render();
+        this.cb.onBindsChange(this.binds, a.key, changed);
+        break;
+      }
     }
   }
 
@@ -218,19 +247,20 @@ export class Board {
    */
   private notifyCaregiver(text: string, askAck: boolean): void {
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const ackNonce = askAck ? newAckNonce() : undefined;
     attempt(() =>
       sendPush({
         title: askAck ? "Caregiver needed" : "Request",
         message: `${text} (${time})`,
         priority: askAck ? 4 : 3,
         tags: [askAck ? "bell" : "speech_balloon"],
-        askAck,
+        ackNonce,
       }),
     ).then((r) => this.cb.onMessage(`Said “${text}” · ${r === "Push sent" ? "caregiver notified" : r}`));
-    if (!askAck || this.alarm.active) return;
+    if (!ackNonce || this.alarm.active) return;
     // Tell the user when the caregiver taps "I'm on my way" (they may not be able to see the screen well).
     this.stopAssistAck();
-    const unsub = listenForAck(() => {
+    const unsub = listenForAck(ackNonce, () => {
       stop();
       speak("Your caregiver is on the way");
       this.cb.onMessage("Caregiver is on the way");
@@ -267,14 +297,15 @@ export class Board {
     this.grid.style.gridTemplateColumns = `repeat(${menu.columns}, 1fr)`;
     this.grid.className = `grid ${menu.view ?? ""}`;
     this.grid.innerHTML = "";
-    if (menu.view === "about") this.grid.appendChild(renderAboutCard(PROFILE));
+    if (menu.view === "about") this.grid.appendChild(renderAboutCard(PROFILE, controlLines(this.settings())));
     this.tiles = visibleItems(this.nav, this.menus).map((item) => {
       const el = document.createElement("div");
-      el.className = `tile ${item.tone ?? ""} ${item.checked === undefined ? "" : item.checked ? "on" : "off"}`;
+      el.className = `tile ${item.tone ?? ""} ${item.checked === undefined ? "" : item.checked ? "on" : "off"} ${item.disabled ? "disabled" : ""}`;
       el.dataset.id = item.id;
       if (item.tone === "pain") el.style.setProperty("--pain", item.label);
       const check = item.checked === undefined ? "" : `<span class="check">${item.checked ? icon("check") : ""}</span>`;
-      el.innerHTML = `${check}${icon(item.icon)}<span>${item.label}</span>${item.sub ? `<small>${item.sub}</small>` : ""}`;
+      // labels are escaped: today they are constants, but profiles / custom phrases may not stay that way
+      el.innerHTML = `${check}${icon(item.icon)}<span>${esc(item.label)}</span>${item.sub ? `<small>${esc(item.sub)}</small>` : ""}`;
       this.grid.appendChild(el);
       return el;
     });
@@ -326,6 +357,8 @@ function saveMacros(ids: string[]): void {
     /* storage unavailable — choice lasts for this session only */
   }
 }
+
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 function flash(el: HTMLElement): void {
   el.classList.add("selected");

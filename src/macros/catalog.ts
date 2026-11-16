@@ -1,5 +1,5 @@
 // Macro catalogue: websites / apps the user can open by gaze, and pure helpers for the user's chosen set.
-// The local server (vite.config.ts) only opens entries from this list, so the browser can't ask it to
+// The trusted backend (electron/backend.ts) only opens entries from this list, so the page can't ask it to
 // run anything arbitrary. Caregivers add new shortcuts by adding entries here.
 // AI-assisted: written with help from Claude (Anthropic).
 
